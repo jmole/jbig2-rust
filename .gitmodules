@@ -1,0 +1,6 @@
+[submodule "vendor/jbig2-imageio"]
+	path = vendor/jbig2-imageio
+	url = git@github.com:jmole/jbig2-imageio.git
+[submodule "vendor/jbig2enc"]
+	path = vendor/jbig2enc
+	url = https://github.com/agl/jbig2enc.git
