@@ -23,3 +23,17 @@ Cargo.lock.bak
 # Environment
 .env
 .env.local
+
+# Patent corpus (large)
+patent-samples
+
+# Local sandbox CARGO_HOME (see .cursor/rules/cargo-home-sandbox.mdc)
+/.cargo/
+
+# Cursor project rules / local state
+/.cursor/
+
+# ITU-T T.88 Recommendation text (redistribution terms not explicitly granted
+# by the bundled Software copyright notice; fetch from https://www.itu.int/rec/T-REC-T.88
+# locally). The Software/ subtree *is* redistributed — see its Copyright Notice.
+/vendor/T-REC-T.88-201808/spec/
