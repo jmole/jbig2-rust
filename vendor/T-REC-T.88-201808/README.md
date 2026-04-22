@@ -9,17 +9,25 @@ ITU Recommendation [and] determining whether your implementation conforms to
 this ITU Recommendation." That is exactly how this crate uses it (see
 `tests/conformance.rs`).
 
-## Spec text — not redistributed
+## Recommendation text
 
-The Recommendation text itself (`spec/ITU-T_T_88__08_2018.{pdf,docx,md}`) is
-**not** committed to this repository. Its redistribution terms are not
-granted by the Software copyright notice above, so contributors should
-download a personal copy directly from ITU-T:
+This folder includes a copy of ITU-T Recommendation T.88 (08/2018):
 
-  https://www.itu.int/rec/T-REC-T.88
+  ITU-T T.88 (08/2018)
+  Information technology – Lossy/lossless coding of bi-level images
+  Citation / canonical source: https://handle.itu.int/11.1002/1000/13688
 
-and drop it into `vendor/T-REC-T.88-201808/spec/` locally. That path is
-`.gitignore`d on purpose.
+Source page:
+  https://www.itu.int/ITU-T/recommendations/rec.aspx?id=13688
+
+Copyright:
+  © ITU. All rights reserved.
+
+This copy is provided for reference and attribution purposes. The
+authoritative source for the Recommendation is the ITU publication page
+and handle above.
+
+The local copy lives in `spec/ITU-T_T_88__08_2018.{pdf,docx,md}`.
 
 ## Folder layout
 
