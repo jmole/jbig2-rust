@@ -23,3 +23,12 @@ Cargo.lock.bak
 # Environment
 .env
 .env.local
+
+# Patent corpus (large)
+patent-samples
+
+# Local sandbox CARGO_HOME (see .cursor/rules/cargo-home-sandbox.mdc)
+/.cargo/
+
+# Cursor project rules / local state
+/.cursor/

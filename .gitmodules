@@ -4,3 +4,6 @@
 [submodule "vendor/jbig2enc"]
 	path = vendor/jbig2enc
 	url = https://github.com/agl/jbig2enc.git
+[submodule "vendor/image"]
+	path = vendor/image
+	url = https://github.com/image-rs/image.git
