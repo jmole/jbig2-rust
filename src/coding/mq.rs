@@ -532,6 +532,11 @@ mod tests {
         }
     }
 
+    fn stable_bits() -> Vec<u8> {
+        let mut rng = Xoshiro256PlusPlus::seed_from_u64(0x1234_5678_9ABC_DEF0);
+        (0..256).map(|_| rng.gen_range(0..2u8)).collect()
+    }
+
     #[test]
     fn round_trip_alternating_bits() {
         let v: Vec<u8> = (0..512u32).map(|i| (i & 1) as u8).collect();
@@ -563,5 +568,18 @@ mod tests {
             .map(|_| if rng.gen_range(0..100u32) < 5 { 1 } else { 0 })
             .collect();
         round_trip(&v);
+    }
+
+    #[test]
+    fn mq_termination_byte_count_is_stable() {
+        let bits = stable_bits();
+        let mut cxs = MqContexts::new(16);
+        let mut enc = MqEncoder::new(bits.len() / 8 + 4);
+        for &b in &bits {
+            let cx = (b as usize) & 0xF;
+            enc.encode(&mut cxs, cx, b);
+        }
+        let out = enc.finish();
+        assert_eq!(out, vec![85, 255, 127, 240]);
     }
 }

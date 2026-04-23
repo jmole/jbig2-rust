@@ -80,7 +80,7 @@ use crate::bitmap::{self, Bitmap};
 use crate::coding::mmr::{BitWriter as MmrBitWriter, encode_t6_line, row_to_bools};
 use crate::coding::mq::{MqContexts, MqDecoder, MqEncoder, MQ_NUM_CONTEXTS};
 use crate::error::{Jbig2Error, Jbig2Result};
-use crate::segments::region_info::RegionInfo;
+use crate::segments::{AtPixels, region_info::RegionInfo};
 
 /// Header for a generic region segment (region info + flags + AT pixels).
 #[derive(Clone, Debug)]
@@ -97,7 +97,7 @@ pub struct GenericRegionHeader {
     pub ext_template: bool,
     /// AT pixel offsets. Only as many as the selected template needs are
     /// meaningful. Unused slots are `(0, 0)`.
-    pub at: [(i8, i8); 12],
+    pub at: AtPixels,
 }
 
 impl GenericRegionHeader {
@@ -118,13 +118,15 @@ impl GenericRegionHeader {
             ));
         }
 
+        let n_at = if mmr {
+            0
+        } else if template == 0 {
+            if ext_template { 12 } else { 4 }
+        } else {
+            1
+        };
         let mut at = [(0i8, 0i8); 12];
         if !mmr {
-            let n_at = if template == 0 {
-                if ext_template { 12 } else { 4 }
-            } else {
-                1
-            };
             let mut buf = vec![0u8; 2 * n_at];
             r.read_exact(&mut buf).map_err(Jbig2Error::from)?;
             for i in 0..n_at {
@@ -138,7 +140,7 @@ impl GenericRegionHeader {
             template,
             tpgdon,
             ext_template,
-            at,
+            at: AtPixels::new(at, n_at as u8),
         })
     }
 
@@ -174,7 +176,7 @@ impl GenericRegionHeader {
 const SLTP_CX: [u32; 4] = [0x9B25, 0x0795, 0x00E5, 0x0195];
 
 /// Default nominal AT pixel positions from spec Table 5.
-pub fn nominal_at(template: u8, ext_template: bool) -> [(i8, i8); 12] {
+pub fn nominal_at(template: u8, ext_template: bool) -> AtPixels {
     let mut out = [(0i8, 0); 12];
     if template == 0 && !ext_template {
         out[0] = (3, -1);
@@ -201,7 +203,14 @@ pub fn nominal_at(template: u8, ext_template: bool) -> [(i8, i8); 12] {
     } else {
         out[0] = (2, -1);
     }
-    out
+    AtPixels::new(
+        out,
+        match (template, ext_template) {
+            (0, false) => 4,
+            (0, true) => 12,
+            _ => 1,
+        },
+    )
 }
 
 /// Return `true` when `at` matches the spec-default AT positions for the
@@ -209,14 +218,14 @@ pub fn nominal_at(template: u8, ext_template: bool) -> [(i8, i8); 12] {
 /// true (AT pixels have to be at the well-known positions the sliding
 /// registers are sized for).
 #[inline]
-fn at_is_nominal(template: u8, ext_template: bool, at: &[(i8, i8); 12]) -> bool {
+fn at_is_nominal(template: u8, ext_template: bool, at: &AtPixels) -> bool {
     let n = match (template, ext_template) {
         (0, false) => 4,
         (0, true) => 12,
         _ => 1,
     };
     let nom = nominal_at(template, ext_template);
-    at[..n] == nom[..n]
+    at.as_slice()[..n] == nom.as_slice()[..n]
 }
 
 /// Decode an arithmetic-coded generic region bitmap.
@@ -248,7 +257,7 @@ pub fn decode_generic_bitmap(
     template: u8,
     ext_template: bool,
     tpgdon: bool,
-    at: &[(i8, i8); 12],
+    at: &AtPixels,
 ) -> Jbig2Result<Bitmap> {
     let mut bitmap = Bitmap::new(width, height)?;
     if width == 0 || height == 0 {
@@ -387,7 +396,7 @@ fn decode_row_generic<const T: u8, const EXT: bool>(
     p2: &[u8],
     p1: &[u8],
     cur: &mut [u8],
-    at: &[(i8, i8); 12],
+    at: &AtPixels,
 ) {
     let w = width as i32;
     for x in 0..w {
@@ -412,7 +421,7 @@ fn build_ctx_from_rows<const T: u8, const EXT: bool>(
     cur: &[u8],
     x: i32,
     w: i32,
-    at: &[(i8, i8); 12],
+    at: &AtPixels,
 ) -> u32 {
     #[inline(always)]
     fn at_bit(row_m1: &[u8], row_m2: &[u8], cur: &[u8], x: i32, dx: i8, dy: i8, w: i32) -> u32 {
@@ -552,7 +561,7 @@ pub fn encode_generic_bitmap(
     template: u8,
     ext_template: bool,
     tpgdon: bool,
-    at: &[(i8, i8); 12],
+    at: &AtPixels,
 ) -> Jbig2Result<()> {
     let width = bitmap.width();
     let height = bitmap.height();
@@ -631,7 +640,7 @@ fn encode_row_generic<const T: u8, const EXT: bool>(
     p2: &[u8],
     p1: &[u8],
     cur: &[u8],
-    at: &[(i8, i8); 12],
+    at: &AtPixels,
 ) {
     for x in 0..w {
         let cx = build_ctx_from_rows::<T, EXT>(p2, p1, cur, x, w, at);

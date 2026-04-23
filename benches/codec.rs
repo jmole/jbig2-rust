@@ -156,10 +156,9 @@ fn t0_generic_arith(duplicate_line_removal: bool) -> EncoderConfig {
         coding: Coding::Arithmetic,
         adaptive_templates: None,
         refinement: false,
-        duplicate_line_removal,
+        generic_region_duplicate_line_removal: duplicate_line_removal,
         symbol_threshold: 0.97,
         refine_after_match: false,
-        multi_page: false,
     }
 }
 
@@ -250,10 +249,9 @@ fn bench_decode_generic_mmr(c: &mut Criterion) {
                 coding: Coding::Mmr,
                 adaptive_templates: None,
                 refinement: false,
-                duplicate_line_removal: false,
+                generic_region_duplicate_line_removal: false,
                 symbol_threshold: 0.97,
                 refine_after_match: false,
-                multi_page: false,
             },
         );
         g.throughput(Throughput::Bytes((w as u64) * (h as u64) / 8));
@@ -332,7 +330,7 @@ fn arith_encode_slice_with_at(
     template: u8,
     ext: bool,
     tpgdon: bool,
-    at: [(i8, i8); 12],
+    at: jbig2::segments::AtPixels,
 ) -> Vec<u8> {
     let hdr = GenericRegionHeader {
         region: RegionInfo {
@@ -482,9 +480,10 @@ fn bench_arith_generic_decode_fallbacks(c: &mut Criterion) {
     // for template 0 so we are not also changing context statistics more
     // than necessary.
     {
-        let mut at = nominal_at(0, false);
-        at[0] = (2, -2);
-        at[2] = (3, -1);
+        let mut at_arr = nominal_at(0, false).as_array();
+        at_arr[0] = (2, -2);
+        at_arr[2] = (3, -1);
+        let at = jbig2::segments::AtPixels::new(at_arr, 4);
         let bytes = arith_encode_slice_with_at(&bm, 0, false, false, at);
         let hdr = GenericRegionHeader {
             region: RegionInfo {

@@ -291,6 +291,9 @@ impl<'a> MmrBitBuf<'a> {
     /// bitmaps of a Huffman SD height class).
     pub fn consume_padding(&mut self, n: u8) -> Jbig2Result<()> {
         debug_assert!(n < 8, "consume_padding only handles sub-byte alignment");
+        if n > 0 && self.peek_bits(n) != 0 {
+            return Err(Jbig2Error::OutOfRange("MMR padding bits non-zero"));
+        }
         self.consume(n)
     }
 

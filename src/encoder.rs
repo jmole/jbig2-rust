@@ -14,15 +14,16 @@ use crate::error::{Jbig2Error, Jbig2Result};
 use crate::segments::{
     file_header::FileHeader,
     generic_region::{encode_generic_arith, encode_generic_mmr, nominal_at, GenericRegionHeader},
-    halftone_region::{encode_halftone_region, HalftoneRegionHeader},
+    halftone_region::{encode_halftone_region_with_contexts, HalftoneRegionHeader},
     page_information::{CombinationOp, PageInformation},
-    pattern_dictionary::{encode_pattern_dictionary, PatternDictionaryHeader},
+    pattern_dictionary::{encode_pattern_dictionary_with_contexts, PatternDictionaryHeader},
     region_info::RegionInfo,
-    symbol_dictionary::{encode_symbol_dictionary, SymbolDictionaryHeader},
+    symbol_dictionary::{encode_symbol_dictionary_with_contexts, SymbolDictionaryHeader},
     text_region::{
-        encode_text_region, RefCorner, RefinedInstance, SymbolInstance, TextRegionHeader,
+        encode_text_region_with_contexts, RefCorner, RefinedInstance, SymbolInstance,
+        TextRegionHeader,
     },
-    SegmentHeader, SegmentType,
+    AtPixels, SegmentHeader, SegmentType,
 };
 use crate::symbol::{
     cc::extract_components, classify::classify_lossy, identity::classify_identity,
@@ -143,17 +144,17 @@ pub struct EncoderConfig {
     /// Coding method.
     pub coding: Coding,
     /// Override the AT pixel positions from the spec nominal defaults.
-    pub adaptive_templates: Option<[(i8, i8); 12]>,
+    pub adaptive_templates: Option<AtPixels>,
     /// Emit refinement regions where available.
     pub refinement: bool,
-    /// Enable typical-prediction duplicate-line removal (TPGD).
-    pub duplicate_line_removal: bool,
+    /// Enable typical-prediction duplicate-line removal (TPGD) for top-level
+    /// generic region pages. Symbol dictionaries, pattern dictionaries, and
+    /// halftone bitplanes do not carry a corresponding flag on the wire.
+    pub generic_region_duplicate_line_removal: bool,
     /// Lossy match threshold (used only in [`Mode::SymbolLossy`]).
     pub symbol_threshold: f32,
     /// Run a post-match refinement pass on matched symbols (lossy path).
     pub refine_after_match: bool,
-    /// Optional page association override for multi-page encoding.
-    pub multi_page: bool,
 }
 
 impl EncoderConfig {
@@ -165,10 +166,9 @@ impl EncoderConfig {
             coding: Coding::Arithmetic,
             adaptive_templates: None,
             refinement: false,
-            duplicate_line_removal: false,
+            generic_region_duplicate_line_removal: false,
             symbol_threshold: 0.97,
             refine_after_match: false,
-            multi_page: false,
         }
     }
 
@@ -180,10 +180,9 @@ impl EncoderConfig {
             coding: Coding::Arithmetic,
             adaptive_templates: None,
             refinement: false,
-            duplicate_line_removal: true,
+            generic_region_duplicate_line_removal: true,
             symbol_threshold: 0.97,
             refine_after_match: false,
-            multi_page: false,
         }
     }
 
@@ -196,10 +195,9 @@ impl EncoderConfig {
             coding: Coding::Arithmetic,
             adaptive_templates: None,
             refinement: true,
-            duplicate_line_removal: true,
+            generic_region_duplicate_line_removal: true,
             symbol_threshold: 0.85,
             refine_after_match: true,
-            multi_page: false,
         }
     }
 
@@ -225,6 +223,7 @@ impl Default for EncoderConfig {
 pub struct Jbig2Encoder<W: Write> {
     writer: W,
     cfg: EncoderConfig,
+    mq_cxs: MqContexts,
     seg_no: u32,
     file_header_emitted: bool,
     pages_emitted: u32,
@@ -237,6 +236,7 @@ impl<W: Write> Jbig2Encoder<W> {
         Self {
             writer,
             cfg,
+            mq_cxs: MqContexts::new(MQ_NUM_CONTEXTS),
             seg_no: 0,
             file_header_emitted: false,
             pages_emitted: 0,
@@ -333,6 +333,7 @@ impl<W: Write> Jbig2Encoder<W> {
         bitmap: &Bitmap,
         coding: SymbolCoding,
     ) -> Jbig2Result<()> {
+        self.validate_non_generic_template("symbol")?;
         let (symbol_threshold, may_contain_refinements, is_lossless) = match coding {
             SymbolCoding::Lossless => (1.0, false, true),
             SymbolCoding::Lossy {
@@ -363,6 +364,7 @@ impl<W: Write> Jbig2Encoder<W> {
         gray_values: &[u32],
         opts: HalftonePageOptions,
     ) -> Jbig2Result<()> {
+        self.validate_non_generic_template("halftone")?;
         if patterns.is_empty() {
             return Err(Jbig2Error::InvalidConfig(
                 "halftone page: need at least one pattern",
@@ -397,7 +399,7 @@ impl<W: Write> Jbig2Encoder<W> {
             })?,
             gray_max: patterns.len() as u32 - 1,
         };
-        let pd_body = encode_pattern_dictionary(&pd_hdr, patterns)?;
+        let pd_body = encode_pattern_dictionary_with_contexts(&pd_hdr, patterns, &mut self.mq_cxs)?;
         let mut pd_hdr_bytes = Vec::new();
         pd_hdr.write(&mut pd_hdr_bytes)?;
         let pd_seg_no = self.seg_no;
@@ -434,7 +436,8 @@ impl<W: Write> Jbig2Encoder<W> {
             hrx: opts.step_x,
             hry: opts.step_y,
         };
-        let ht_body = encode_halftone_region(&ht_hdr, gray_values, patterns.len())?;
+        let ht_body =
+            encode_halftone_region_with_contexts(&ht_hdr, gray_values, patterns.len(), &mut self.mq_cxs)?;
         let mut ht_hdr_bytes = Vec::new();
         ht_hdr.write(&mut ht_hdr_bytes)?;
         self.emit_segment(
@@ -468,7 +471,7 @@ impl<W: Write> Jbig2Encoder<W> {
             },
             mmr: matches!(self.cfg.coding, Coding::Mmr),
             template: template_id,
-            tpgdon: self.cfg.duplicate_line_removal,
+            tpgdon: self.cfg.generic_region_duplicate_line_removal,
             ext_template,
             at,
         };
@@ -559,7 +562,7 @@ impl<W: Write> Jbig2Encoder<W> {
             sorted_syms.len() as u32,
             sorted_syms.len() as u32,
         );
-        let sd_body = encode_symbol_dictionary(&sd_hdr, &sorted_syms, 0)?;
+        let sd_body = encode_symbol_dictionary_with_contexts(&sd_hdr, &sorted_syms, 0, &mut self.mq_cxs)?;
 
         let sd_seg_no = self.seg_no;
         let mut sd_hdr_bytes = Vec::new();
@@ -651,7 +654,8 @@ impl<W: Write> Jbig2Encoder<W> {
                 rat: [(0, 0); 2],
                 num_instances: region_instances.len() as u32,
             };
-            let tr_body = encode_text_region(&tr_hdr, region_instances, &sorted_syms)?;
+            let tr_body =
+                encode_text_region_with_contexts(&tr_hdr, region_instances, &sorted_syms, &mut this.mq_cxs)?;
             let mut tr_hdr_bytes = Vec::new();
             tr_hdr.write(&mut tr_hdr_bytes)?;
             this.emit_segment(
@@ -703,6 +707,11 @@ impl<W: Write> Jbig2Encoder<W> {
                 "fewer pages emitted than declared",
             ));
         }
+        if self.pages_emitted > self.total_pages {
+            return Err(Jbig2Error::InvalidConfig(
+                "more pages emitted than declared",
+            ));
+        }
         // EOF segment so random-access-compatible readers terminate cleanly.
         let eof_seg = SegmentHeader {
             number: self.seg_no,
@@ -744,6 +753,17 @@ impl<W: Write> Jbig2Encoder<W> {
         self.writer
             .write_all(&body_buf)
             .map_err(Jbig2Error::from)?;
+        Ok(())
+    }
+
+    fn validate_non_generic_template(&self, use_case: &'static str) -> Jbig2Result<()> {
+        if matches!(self.cfg.template, GenericTemplate::Extended) {
+            return Err(Jbig2Error::InvalidConfig(match use_case {
+                "symbol" => "Extended template requires Mode::Generic",
+                "halftone" => "Extended template is not supported for halftone encoding",
+                _ => "Extended template is not supported for this encoder path",
+            }));
+        }
         Ok(())
     }
 }
@@ -911,10 +931,9 @@ mod tests {
             coding: Coding::Arithmetic,
             adaptive_templates: None,
             refinement: true,
-            duplicate_line_removal: false,
+            generic_region_duplicate_line_removal: false,
             symbol_threshold: 0.85,
             refine_after_match: true,
-            multi_page: false,
         };
         let mut buf = Vec::new();
         let mut enc = Jbig2Encoder::new(&mut buf, cfg);
@@ -957,10 +976,9 @@ mod tests {
             coding: Coding::Arithmetic,
             adaptive_templates: None,
             refinement: false,
-            duplicate_line_removal: false,
+            generic_region_duplicate_line_removal: false,
             symbol_threshold: 0.97,
             refine_after_match: false,
-            multi_page: false,
         };
         let mut buf = Vec::new();
         let mut enc = Jbig2Encoder::new(&mut buf, cfg);

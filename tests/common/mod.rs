@@ -1,5 +1,6 @@
 //! Shared test helpers: vendored conformance-file paths + a minimal 1-bpp
 //! BMP reader.
+#![allow(dead_code)]
 
 use std::path::PathBuf;
 

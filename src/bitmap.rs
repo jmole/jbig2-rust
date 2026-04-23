@@ -17,6 +17,7 @@
 //! neighbourhood offsets.
 
 use crate::error::{Jbig2Error, Jbig2Result};
+use crate::segments::CombinationOp;
 
 /// Bitmap combination operator, mirrored onto the packed blitter.
 ///
@@ -37,6 +38,18 @@ pub enum BlitOp {
     XNor,
     /// Destination := source (source overwrites destination).
     Replace,
+}
+
+impl From<CombinationOp> for BlitOp {
+    fn from(value: CombinationOp) -> Self {
+        match value {
+            CombinationOp::Or => Self::Or,
+            CombinationOp::And => Self::And,
+            CombinationOp::Xor => Self::Xor,
+            CombinationOp::XNor => Self::XNor,
+            CombinationOp::Replace => Self::Replace,
+        }
+    }
 }
 
 /// A 1-bit-per-pixel bitmap with row-packed storage (MSB first).
@@ -282,6 +295,65 @@ impl Bitmap {
                 src_start_bit,
                 copy_w,
                 op,
+            );
+        }
+    }
+
+    /// Copy a rectangular region from `src` into `self` using `Replace`.
+    ///
+    /// Both the source rectangle and the destination placement are clipped to
+    /// the participating bitmaps, so callers can hand in nominal JBIG2 region
+    /// geometry without pre-sanitising it.
+    pub fn copy_from(
+        &mut self,
+        src: &Bitmap,
+        src_x: i32,
+        src_y: i32,
+        width: u32,
+        height: u32,
+        dst_x: i32,
+        dst_y: i32,
+    ) {
+        let src_w = src.width as i32;
+        let src_h = src.height as i32;
+        let rect_x0 = src_x.max(0);
+        let rect_y0 = src_y.max(0);
+        let rect_x1 = (src_x + width as i32).min(src_w);
+        let rect_y1 = (src_y + height as i32).min(src_h);
+        if rect_x0 >= rect_x1 || rect_y0 >= rect_y1 {
+            return;
+        }
+
+        let clip_w = (rect_x1 - rect_x0) as u32;
+        let clip_h = (rect_y1 - rect_y0) as u32;
+        let clip_dst_x = dst_x + (rect_x0 - src_x);
+        let clip_dst_y = dst_y + (rect_y0 - src_y);
+
+        let dst_w = self.width as i32;
+        let dst_h = self.height as i32;
+        let x_start = clip_dst_x.max(0);
+        let y_start = clip_dst_y.max(0);
+        let x_end = (clip_dst_x + clip_w as i32).min(dst_w);
+        let y_end = (clip_dst_y + clip_h as i32).min(dst_h);
+        if x_start >= x_end || y_start >= y_end {
+            return;
+        }
+
+        let src_x_off = (rect_x0 + (x_start - clip_dst_x)) as usize;
+        let src_y_off = (rect_y0 + (y_start - clip_dst_y)) as usize;
+        let copy_w = (x_end - x_start) as usize;
+        let copy_h = (y_end - y_start) as usize;
+
+        for row in 0..copy_h {
+            let dst_row_base = (y_start as usize + row) * self.stride;
+            let src_row_base = (src_y_off + row) * src.stride;
+            composite_row(
+                &mut self.data[dst_row_base..dst_row_base + self.stride],
+                x_start as usize,
+                &src.data[src_row_base..src_row_base + src.stride],
+                src_x_off,
+                copy_w,
+                BlitOp::Replace,
             );
         }
     }

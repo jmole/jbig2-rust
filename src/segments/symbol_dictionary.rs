@@ -27,6 +27,7 @@ use crate::segments::generic_region::{
 use crate::segments::page_information::CombinationOp;
 use crate::segments::refinement_region::{decode_refinement_region, encode_refinement_region};
 use crate::segments::region_info::RegionInfo;
+use crate::segments::AtPixels;
 use crate::segments::text_region::{
     decode_text_region_body, sym_code_len, RefCorner, TextRegionHeader,
 };
@@ -57,7 +58,7 @@ pub struct SymbolDictionaryHeader {
     /// `SDRTEMPLATE` (0/1), valid only when `sdrefagg = true`.
     pub sd_rtemplate: bool,
     /// AT pixel offsets (size matches `sd_template`; unused slots are `(0, 0)`).
-    pub at: [(i8, i8); 4],
+    pub at: AtPixels,
     /// Refinement AT pixels (only used when `sdrefagg = true` and
     /// `sd_rtemplate = false`).
     pub rat: [(i8, i8); 2],
@@ -125,7 +126,7 @@ impl SymbolDictionaryHeader {
             context_retained,
             sd_template,
             sd_rtemplate,
-            at,
+            at: AtPixels::from_array(at),
             rat,
             num_ex_syms,
             num_new_syms,
@@ -176,11 +177,6 @@ impl SymbolDictionaryHeader {
 
     /// Default header for the arithmetic-only, no-refagg path.
     pub fn default_arithmetic(template: u8, num_ex: u32, num_new: u32) -> Self {
-        let at_full = nominal_at(template, false);
-        let mut at = [(0i8, 0i8); 4];
-        for (i, slot) in at.iter_mut().enumerate() {
-            *slot = at_full[i];
-        }
         Self {
             sdhuff: false,
             sdrefagg: false,
@@ -192,7 +188,7 @@ impl SymbolDictionaryHeader {
             context_retained: false,
             sd_template: template,
             sd_rtemplate: false,
-            at,
+            at: AtPixels::new(nominal_at(template, false).as_array(), if template == 0 { 4 } else { 1 }),
             rat: [(0, 0); 2],
             num_ex_syms: num_ex,
             num_new_syms: num_new,
@@ -242,10 +238,7 @@ pub fn decode_symbol_dictionary_with_contexts(
         return decode_symbol_dictionary_huffman(header, body, import_symbols);
     }
 
-    let mut at = [(0i8, 0i8); 12];
-    for (i, slot) in at.iter_mut().enumerate().take(4) {
-        *slot = header.at[i];
-    }
+    let at = AtPixels::new(header.at.as_array(), header.at.len() as u8);
 
     if cxs.len() < MQ_NUM_CONTEXTS {
         return Err(Jbig2Error::InvalidConfig(
@@ -538,11 +531,7 @@ fn decode_symbol_dictionary_huffman(
             let mut x_off: i32 = 0;
             for &w in &widths {
                 let mut sym = Bitmap::new(w as u32, hc_height as u32)?;
-                for y in 0..hc_height {
-                    for col in 0..w {
-                        sym.set_pixel(col, y, bhc.get_pixel(x_off + col, y));
-                    }
-                }
+                sym.copy_from(&bhc, x_off, 0, w as u32, hc_height as u32, 0, 0);
                 new_symbols.push(sym);
                 x_off += w;
             }
@@ -953,6 +942,17 @@ pub fn encode_symbol_dictionary(
     symbols: &[Bitmap],
     import_count: u32,
 ) -> Jbig2Result<Vec<u8>> {
+    let mut cxs = MqContexts::new(MQ_NUM_CONTEXTS);
+    encode_symbol_dictionary_with_contexts(header, symbols, import_count, &mut cxs)
+}
+
+/// Build a symbol dictionary body using a caller-owned MQ context pool.
+pub fn encode_symbol_dictionary_with_contexts(
+    header: &SymbolDictionaryHeader,
+    symbols: &[Bitmap],
+    import_count: u32,
+    cxs: &mut MqContexts,
+) -> Jbig2Result<Vec<u8>> {
     if header.sdhuff || header.sdrefagg {
         return Err(Jbig2Error::Unsupported(
             "symbol dictionary encoder: only arithmetic non-refagg path supported",
@@ -967,30 +967,27 @@ pub fn encode_symbol_dictionary(
     // Order: symbols are already in dictionary order, grouped by height.
     // We expect the caller to have sorted them by height ascending; if not,
     // we group them as given and emit arbitrary HCDH deltas.
-    let mut at = [(0i8, 0i8); 12];
-    for (i, slot) in at.iter_mut().enumerate().take(4) {
-        *slot = header.at[i];
-    }
+    let at = AtPixels::new(header.at.as_array(), header.at.len() as u8);
 
-    let mut cxs = MqContexts::new(MQ_NUM_CONTEXTS);
     let mut enc = MqEncoder::new(symbols.iter().map(|s| s.data().len()).sum::<usize>() + 64);
+    cxs.reset();
 
     let mut i = 0;
     let mut prev_height: i32 = 0;
     while i < symbols.len() {
         let h = symbols[i].height() as i32;
-        encode_integer(&mut enc, &mut cxs, IADH, h - prev_height)?;
+        encode_integer(&mut enc, cxs, IADH, h - prev_height)?;
         prev_height = h;
 
         // Emit every symbol with the same height.
         let mut prev_width: i32 = 0;
         while i < symbols.len() && symbols[i].height() as i32 == h {
             let w = symbols[i].width() as i32;
-            encode_integer(&mut enc, &mut cxs, IADW, w - prev_width)?;
+            encode_integer(&mut enc, cxs, IADW, w - prev_width)?;
             prev_width = w;
             encode_generic_bitmap(
                 &mut enc,
-                &mut cxs,
+                cxs,
                 &symbols[i],
                 header.sd_template,
                 false,
@@ -1000,7 +997,7 @@ pub fn encode_symbol_dictionary(
             i += 1;
         }
         // Terminate the height class with OOB.
-        encode_integer(&mut enc, &mut cxs, IADW, OOB)?;
+        encode_integer(&mut enc, cxs, IADW, OOB)?;
     }
 
     // Export run stream — see notes in `encode_symbol_dictionary` above
@@ -1009,19 +1006,19 @@ pub fn encode_symbol_dictionary(
     // reference encoder's `IAEX(0), IAEX(0)` shortcut whenever
     // `num_ex_syms == num_new_syms`; otherwise emit explicit runs.
     if header.num_ex_syms == header.num_new_syms {
-        encode_integer(&mut enc, &mut cxs, IAEX, 0)?;
-        encode_integer(&mut enc, &mut cxs, IAEX, 0)?;
+        encode_integer(&mut enc, cxs, IAEX, 0)?;
+        encode_integer(&mut enc, cxs, IAEX, 0)?;
     } else {
         let mut cur: u8 = 0;
         if import_count > 0 {
-            encode_integer(&mut enc, &mut cxs, IAEX, import_count as i32)?;
+            encode_integer(&mut enc, cxs, IAEX, import_count as i32)?;
             cur ^= 1;
         } else {
-            encode_integer(&mut enc, &mut cxs, IAEX, 0)?;
+            encode_integer(&mut enc, cxs, IAEX, 0)?;
             cur ^= 1;
         }
         let _ = cur;
-        encode_integer(&mut enc, &mut cxs, IAEX, header.num_new_syms as i32)?;
+        encode_integer(&mut enc, cxs, IAEX, header.num_new_syms as i32)?;
     }
 
     Ok(enc.finish())

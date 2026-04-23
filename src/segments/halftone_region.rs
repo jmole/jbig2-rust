@@ -2,7 +2,7 @@
 
 use std::io::{Read, Write};
 
-use crate::bitmap::{Bitmap, BlitOp};
+use crate::bitmap::Bitmap;
 use crate::coding::mmr_lut::MmrBitBuf;
 use crate::coding::mq::{MqContexts, MqDecoder, MqEncoder, MQ_NUM_CONTEXTS};
 use crate::error::{Jbig2Error, Jbig2Result};
@@ -12,6 +12,7 @@ use crate::segments::generic_region::{
 };
 use crate::segments::page_information::CombinationOp;
 use crate::segments::region_info::RegionInfo;
+use crate::segments::AtPixels;
 
 /// Parsed halftone-region segment header.
 #[derive(Clone, Debug)]
@@ -106,23 +107,13 @@ impl HalftoneRegionHeader {
     }
 }
 
-fn halftone_at(template: u8) -> [(i8, i8); 12] {
+fn halftone_at(template: u8) -> AtPixels {
     let mut at = [(0i8, 0i8); 12];
     at[0] = (if template <= 1 { 3 } else { 2 }, -1);
     at[1] = (-3, -1);
     at[2] = (2, -2);
     at[3] = (-2, -2);
-    at
-}
-
-fn combop_to_blit(op: CombinationOp) -> BlitOp {
-    match op {
-        CombinationOp::Or => BlitOp::Or,
-        CombinationOp::And => BlitOp::And,
-        CombinationOp::Xor => BlitOp::Xor,
-        CombinationOp::XNor => BlitOp::XNor,
-        CombinationOp::Replace => BlitOp::Replace,
-    }
+    AtPixels::new(at, 4)
 }
 
 fn halftone_bits_per_pattern(num_patterns: usize) -> u32 {
@@ -261,7 +252,7 @@ pub fn decode_halftone_region_with_contexts(
             let pat = patterns.get(gray as usize).ok_or(Jbig2Error::OutOfRange(
                 "halftone region: gray value exceeds pattern dictionary",
             ))?;
-            region.composite(pat, x as i32, y as i32, combop_to_blit(header.hcombop));
+            region.composite(pat, x as i32, y as i32, header.hcombop.into());
         }
     }
     Ok(region)
@@ -364,6 +355,7 @@ pub fn encode_halftone_region(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bitmap::BlitOp;
 
     fn sample_patterns() -> Vec<Bitmap> {
         let mut p0 = Bitmap::new(3, 3).unwrap();

@@ -8,6 +8,7 @@ use crate::error::{Jbig2Error, Jbig2Result};
 use crate::segments::generic_region::{decode_generic_arith, decode_generic_mmr, GenericRegionHeader};
 use crate::segments::page_information::CombinationOp;
 use crate::segments::region_info::RegionInfo;
+use crate::segments::AtPixels;
 
 /// Parsed pattern dictionary header.
 #[derive(Clone, Debug)]
@@ -78,7 +79,7 @@ fn pattern_collective_header(header: &PatternDictionaryHeader) -> GenericRegionH
         template: header.hd_template,
         tpgdon: false,
         ext_template: false,
-        at,
+        at: AtPixels::new(at, 4),
     }
 }
 
@@ -155,11 +156,7 @@ pub fn decode_pattern_dictionary_with_contexts(
     for idx in 0..num_patterns {
         let mut pat = Bitmap::new(header.hdpw as u32, ph)?;
         let x_off = idx as i32 * pw;
-        for y in 0..ph as i32 {
-            for x in 0..pw {
-                pat.set_pixel(x, y, collective.get_pixel(x_off + x, y));
-            }
-        }
+        pat.copy_from(&collective, x_off, 0, header.hdpw as u32, ph, 0, 0);
         pats.push(pat);
     }
     Ok(pats)

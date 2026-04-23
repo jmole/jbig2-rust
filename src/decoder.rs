@@ -8,10 +8,12 @@
 //! The page is composited according to the page-info default pixel value +
 //! combination operator and the per-region combination operator.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io::{Cursor, Read, Seek, SeekFrom};
+use std::sync::Arc;
 
-use crate::bitmap::{Bitmap, BlitOp};
+use crate::bitmap::Bitmap;
 use crate::coding::mq::{MqContexts, MqDecoder, MQ_NUM_CONTEXTS};
 use crate::error::{Jbig2Error, Jbig2Result};
 use crate::rgb_bitmap::RgbBitmap;
@@ -49,19 +51,9 @@ pub struct Jbig2Decoder<R: Read + Seek> {
     /// paying a fresh allocation per segment is wasteful. The first segment
     /// sizes the Vec and subsequent segments just copy into it.
     body_scratch: Vec<u8>,
-    /// Reusable MQ context pool for generic-region decodes. Spec §7.4.2.1
-    /// resets contexts at the start of each generic region, so the same
-    /// allocation can be cleared and reused instead of being reallocated.
-    generic_mq_cxs: MqContexts,
-    /// Reusable MQ context pool for text-region and symbol-dictionary
-    /// decodes. Both families (§7.4.2.1 generic-region coder used for
-    /// symbol bitmaps + the integer coder for widths/heights/IDs) need a
-    /// fresh zeroed context pool at the start of each segment, so the
-    /// decoder owns a single allocation and the callees reset it before
-    /// use. Separate from [`Self::generic_mq_cxs`] only to keep the
-    /// segment-level borrowing patterns simple; the spec allows the same
-    /// pool to service both families as long as it is reset per segment.
-    symbol_mq_cxs: MqContexts,
+    /// Reusable MQ context pool reset and reused for every arithmetic-coded
+    /// segment family.
+    mq_cxs: MqContexts,
 }
 
 #[derive(Clone, Debug)]
@@ -96,7 +88,7 @@ fn decode_t45_colour_data(data: &[u8]) -> Jbig2Result<T45ColourData> {
         ));
     }
     let mut cur = 6usize;
-    let mut values = vec![vec![0u32; num_components]; num_vals];
+    let mut values = vec![0u32; num_vals * num_components];
     let mut i = 0usize;
     while i < num_vals {
         if cur >= data.len() {
@@ -112,7 +104,7 @@ fn decode_t45_colour_data(data: &[u8]) -> Jbig2Result<T45ColourData> {
             cur += 2;
         }
         let mut sample = vec![0u32; num_components];
-        for comp in &mut sample {
+        for comp in sample.iter_mut() {
             match component_len {
                 1 => {
                     if cur + 1 > data.len() {
@@ -147,19 +139,22 @@ fn decode_t45_colour_data(data: &[u8]) -> Jbig2Result<T45ColourData> {
                 "text region: T.45 run exceeds colour count",
             ));
         }
-        for dst in &mut values[i..i + run_len] {
-            dst.copy_from_slice(&sample);
+        let first_dst = i * num_components;
+        values[first_dst..first_dst + num_components].copy_from_slice(&sample);
+        for run_idx in 1..run_len {
+            let dst_start = (i + run_idx) * num_components;
+            values[dst_start..dst_start + num_components].copy_from_slice(&sample);
         }
         i += run_len;
     }
 
     match num_components {
         1 => Ok(T45ColourData::PaletteIds(
-            values.into_iter().map(|sample| sample[0]).collect(),
+            values.chunks_exact(num_components).map(|sample| sample[0]).collect(),
         )),
         3.. => {
             let mut out = Vec::with_capacity(num_vals);
-            for sample in values {
+            for sample in values.chunks_exact(num_components) {
                 out.push([sample[0] as u8, sample[1] as u8, sample[2] as u8]);
             }
             Ok(T45ColourData::DirectRgb(out))
@@ -168,6 +163,73 @@ fn decode_t45_colour_data(data: &[u8]) -> Jbig2Result<T45ColourData> {
             "text region: unsupported T.45 component count",
         )),
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FallbackPolicy {
+    All,
+    LatestOnly,
+}
+
+fn read_segment_body<'a, R: Read + Seek>(
+    reader: &mut R,
+    scratch: &'a mut Vec<u8>,
+    seg: &SegmentDescriptor,
+) -> Jbig2Result<&'a [u8]> {
+    reader
+        .seek(SeekFrom::Start(seg.data_offset))
+        .map_err(Jbig2Error::from)?;
+    scratch.clear();
+    scratch.reserve(seg.data_len as usize);
+    let mut limited = reader.take(seg.data_len as u64);
+    limited.read_to_end(scratch).map_err(Jbig2Error::from)?;
+    let expected = seg.data_len as usize;
+    if scratch.len() != expected {
+        return Err(Jbig2Error::UnexpectedEof {
+            needed: expected - scratch.len(),
+        });
+    }
+    Ok(scratch.as_slice())
+}
+
+fn parse_segment_header<T, F>(body: &[u8], parse: F) -> Jbig2Result<(T, &[u8])>
+where
+    F: for<'a> FnOnce(&mut Cursor<&'a [u8]>) -> Jbig2Result<T>,
+{
+    let mut cur = Cursor::new(body);
+    let header = parse(&mut cur)?;
+    let header_len = cur.position() as usize;
+    Ok((header, &body[header_len..]))
+}
+
+fn fallback_referred_numbers<F>(
+    segments: &[SegmentDescriptor],
+    idx: usize,
+    mut matches_kind: F,
+    policy: FallbackPolicy,
+) -> Vec<u32>
+where
+    F: FnMut(SegmentType) -> bool,
+{
+    let page_assoc = segments[idx].header.page_association;
+    let mut out = Vec::new();
+    for prior in &segments[..idx] {
+        if !matches_kind(prior.header.segment_type) {
+            continue;
+        }
+        let p = prior.header.page_association;
+        if p != 0 && p != page_assoc {
+            continue;
+        }
+        match policy {
+            FallbackPolicy::All => out.push(prior.header.number),
+            FallbackPolicy::LatestOnly => {
+                out.clear();
+                out.push(prior.header.number);
+            }
+        }
+    }
+    out
 }
 
 impl<R: Read + Seek> Jbig2Decoder<R> {
@@ -206,8 +268,7 @@ impl<R: Read + Seek> Jbig2Decoder<R> {
             header,
             segments,
             body_scratch: Vec::new(),
-            generic_mq_cxs: MqContexts::new(MQ_NUM_CONTEXTS),
-            symbol_mq_cxs: MqContexts::new(MQ_NUM_CONTEXTS),
+            mq_cxs: MqContexts::new(MQ_NUM_CONTEXTS),
         })
     }
 
@@ -263,10 +324,10 @@ impl<R: Read + Seek> Jbig2Decoder<R> {
         // global segment number of the dictionary segment, value is its
         // exported symbols. Dictionaries may reference other dictionaries
         // via the segment header's referred-to list.
-        let mut sym_dicts: HashMap<u32, Vec<Bitmap>> = HashMap::new();
+        let mut sym_dicts: HashMap<u32, Vec<Arc<Bitmap>>> = HashMap::new();
         // Pattern dictionaries accumulate similarly for later halftone
         // region segments.
-        let mut pattern_dicts: HashMap<u32, Vec<Bitmap>> = HashMap::new();
+        let mut pattern_dicts: HashMap<u32, Vec<Arc<Bitmap>>> = HashMap::new();
         // Colour palette segments contribute additional RGB entries that
         // colour-extended text regions may refer to by palette ID.
         let mut colour_palettes: HashMap<u32, Vec<[u8; 3]>> = HashMap::new();
@@ -417,8 +478,8 @@ impl<R: Read + Seek> Jbig2Decoder<R> {
     fn decode_symbol_dictionary(
         &mut self,
         idx: usize,
-        sym_dicts: &HashMap<u32, Vec<Bitmap>>,
-    ) -> Jbig2Result<(u32, Vec<Bitmap>)> {
+        sym_dicts: &HashMap<u32, Vec<Arc<Bitmap>>>,
+    ) -> Jbig2Result<(u32, Vec<Arc<Bitmap>>)> {
         let seg_no = self.segments[idx].header.number;
         // Borrow imports by reference so we never clone upstream
         // dictionaries just to pass them into the decoder. This is
@@ -433,7 +494,7 @@ impl<R: Read + Seek> Jbig2Decoder<R> {
         let mut import: Vec<&Bitmap> = Vec::new();
         for ref_no in &self.segments[idx].header.referred {
             if let Some(syms) = sym_dicts.get(ref_no) {
-                import.extend(syms.iter());
+                import.extend(syms.iter().map(Arc::as_ref));
             }
         }
         if import.is_empty() {
@@ -442,57 +503,44 @@ impl<R: Read + Seek> Jbig2Decoder<R> {
             // expects every prior in-scope symbol dictionary to be
             // imported implicitly. Conformance set TT5 needs this for
             // its second symbol dictionary.
-            let page_assoc = self.segments[idx].header.page_association;
-            for prior in &self.segments[..idx] {
-                if !matches!(prior.header.segment_type, SegmentType::SymbolDictionary) {
-                    continue;
-                }
-                let p = prior.header.page_association;
-                if p == 0 || p == page_assoc {
-                    if let Some(syms) = sym_dicts.get(&prior.header.number) {
-                        import.extend(syms.iter());
-                    }
+            for ref_no in fallback_referred_numbers(
+                &self.segments,
+                idx,
+                |kind| matches!(kind, SegmentType::SymbolDictionary),
+                FallbackPolicy::All,
+            ) {
+                if let Some(syms) = sym_dicts.get(&ref_no) {
+                    import.extend(syms.iter().map(Arc::as_ref));
                 }
             }
         }
-        // Split-borrow so we can hold `body_scratch` (read) and
-        // `symbol_mq_cxs` (mut) across the decode call without fighting
-        // the borrow checker.
         let Self {
             reader,
             segments,
             body_scratch,
-            symbol_mq_cxs,
+            mq_cxs,
             ..
         } = self;
         let seg = &segments[idx];
-        let data_len = seg.data_len as usize;
-        reader
-            .seek(SeekFrom::Start(seg.data_offset))
-            .map_err(Jbig2Error::from)?;
-        body_scratch.resize(data_len, 0);
-        reader
-            .read_exact(&mut body_scratch[..data_len])
-            .map_err(Jbig2Error::from)?;
-        let body: &[u8] = &body_scratch[..data_len];
-        let mut cur = Cursor::new(body);
-        let header = SymbolDictionaryHeader::read(&mut cur)?;
-        let header_len = cur.position() as usize;
-        let coded = &body[header_len..];
+        let body = read_segment_body(reader, body_scratch, seg)?;
+        let (header, coded) = parse_segment_header(body, |cur| SymbolDictionaryHeader::read(cur))?;
 
         let decoded = symbol_dictionary::decode_symbol_dictionary_with_contexts(
             &header,
             coded,
             &import,
-            symbol_mq_cxs,
+            mq_cxs,
         )?;
-        Ok((seg_no, decoded.exported))
+        Ok((
+            seg_no,
+            decoded.exported.into_iter().map(Arc::new).collect(),
+        ))
     }
 
     fn decode_text_region(
         &mut self,
         idx: usize,
-        sym_dicts: &HashMap<u32, Vec<Bitmap>>,
+        sym_dicts: &HashMap<u32, Vec<Arc<Bitmap>>>,
         colour_palettes: &HashMap<u32, Vec<[u8; 3]>>,
     ) -> Jbig2Result<DecodedTextRegion> {
         // SBSYMS is the concatenation of every referred-to symbol
@@ -508,7 +556,7 @@ impl<R: Read + Seek> Jbig2Decoder<R> {
         let mut sbsyms: Vec<&Bitmap> = Vec::new();
         for ref_no in &self.segments[idx].header.referred {
             if let Some(syms) = sym_dicts.get(ref_no) {
-                sbsyms.extend(syms.iter());
+                sbsyms.extend(syms.iter().map(Arc::as_ref));
             }
         }
         if sbsyms.is_empty() {
@@ -524,21 +572,15 @@ impl<R: Read + Seek> Jbig2Decoder<R> {
             // = 2 imports + 1 new), simply using the most recent SD on
             // the page reproduces the full chain without duplicating
             // imported symbols.
-            let page_assoc = self.segments[idx].header.page_association;
-            let mut latest: Option<&Vec<Bitmap>> = None;
-            for prior in &self.segments[..idx] {
-                if !matches!(prior.header.segment_type, SegmentType::SymbolDictionary) {
-                    continue;
+            for ref_no in fallback_referred_numbers(
+                &self.segments,
+                idx,
+                |kind| matches!(kind, SegmentType::SymbolDictionary),
+                FallbackPolicy::LatestOnly,
+            ) {
+                if let Some(syms) = sym_dicts.get(&ref_no) {
+                    sbsyms.extend(syms.iter().map(Arc::as_ref));
                 }
-                let p = prior.header.page_association;
-                if p == 0 || p == page_assoc {
-                    if let Some(syms) = sym_dicts.get(&prior.header.number) {
-                        latest = Some(syms);
-                    }
-                }
-            }
-            if let Some(syms) = latest {
-                sbsyms.extend(syms.iter());
             }
             if sbsyms.is_empty() {
                 return Err(Jbig2Error::OutOfRange(
@@ -546,29 +588,18 @@ impl<R: Read + Seek> Jbig2Decoder<R> {
                 ));
             }
         }
-        // Split-borrow the decoder so the body scratch buffer and the
-        // symbol/text MQ context pool can both be held across the
-        // decode call.
         let Self {
             reader,
             segments,
             body_scratch,
-            symbol_mq_cxs,
+            mq_cxs,
             ..
         } = self;
         let seg = &segments[idx];
-        let data_len = seg.data_len as usize;
-        reader
-            .seek(SeekFrom::Start(seg.data_offset))
-            .map_err(Jbig2Error::from)?;
-        body_scratch.resize(data_len, 0);
-        reader
-            .read_exact(&mut body_scratch[..data_len])
-            .map_err(Jbig2Error::from)?;
-        let body: &[u8] = &body_scratch[..data_len];
-        let mut cur = Cursor::new(body);
-        let header = TextRegionHeader::read(&mut cur)?;
-        let header_len = cur.position() as usize;
+        let body = read_segment_body(reader, body_scratch, seg)?;
+        let (header, rest) = parse_segment_header(body, |cur| TextRegionHeader::read(cur))?;
+        let header_len = body.len() - rest.len();
+        let data_len = body.len();
         if header.region.colour_extension {
             let colour_total_len =
                 u32::from_be_bytes(body[data_len - 4..data_len].try_into().unwrap()) as usize;
@@ -601,7 +632,7 @@ impl<R: Read + Seek> Jbig2Decoder<R> {
                 coded,
                 &sbsyms,
                 &colours,
-                symbol_mq_cxs,
+                mq_cxs,
             )?;
             Ok(DecodedTextRegion::Colour(header, region))
         } else {
@@ -610,7 +641,7 @@ impl<R: Read + Seek> Jbig2Decoder<R> {
                 &header,
                 coded,
                 &sbsyms,
-                symbol_mq_cxs,
+                mq_cxs,
             )?;
             Ok(DecodedTextRegion::Mono(header, region))
         }
@@ -619,32 +650,21 @@ impl<R: Read + Seek> Jbig2Decoder<R> {
     fn decode_pattern_dictionary(
         &mut self,
         idx: usize,
-    ) -> Jbig2Result<(u32, Vec<Bitmap>)> {
+    ) -> Jbig2Result<(u32, Vec<Arc<Bitmap>>)> {
         let seg_no = self.segments[idx].header.number;
         let Self {
             reader,
             segments,
             body_scratch,
-            generic_mq_cxs,
+            mq_cxs,
             ..
         } = self;
         let seg = &segments[idx];
-        let data_len = seg.data_len as usize;
-        reader
-            .seek(SeekFrom::Start(seg.data_offset))
-            .map_err(Jbig2Error::from)?;
-        body_scratch.resize(data_len, 0);
-        reader
-            .read_exact(&mut body_scratch[..data_len])
-            .map_err(Jbig2Error::from)?;
-        let body: &[u8] = &body_scratch[..data_len];
-        let mut cur = Cursor::new(body);
-        let header = PatternDictionaryHeader::read(&mut cur)?;
-        let header_len = cur.position() as usize;
-        let coded = &body[header_len..];
+        let body = read_segment_body(reader, body_scratch, seg)?;
+        let (header, coded) = parse_segment_header(body, |cur| PatternDictionaryHeader::read(cur))?;
         let patterns =
-            pattern_dictionary::decode_pattern_dictionary_with_contexts(&header, coded, generic_mq_cxs)?;
-        Ok((seg_no, patterns))
+            pattern_dictionary::decode_pattern_dictionary_with_contexts(&header, coded, mq_cxs)?;
+        Ok((seg_no, patterns.into_iter().map(Arc::new).collect()))
     }
 
     fn decode_colour_palette(
@@ -659,45 +679,32 @@ impl<R: Read + Seek> Jbig2Decoder<R> {
             ..
         } = self;
         let seg = &segments[idx];
-        let data_len = seg.data_len as usize;
-        reader
-            .seek(SeekFrom::Start(seg.data_offset))
-            .map_err(Jbig2Error::from)?;
-        body_scratch.resize(data_len, 0);
-        reader
-            .read_exact(&mut body_scratch[..data_len])
-            .map_err(Jbig2Error::from)?;
-        let palette = ColourPalette::decode(&body_scratch[..data_len])?;
+        let body = read_segment_body(reader, body_scratch, seg)?;
+        let palette = ColourPalette::decode(body)?;
         Ok((seg_no, palette.rgb_values()?))
     }
 
     fn decode_halftone_region(
         &mut self,
         idx: usize,
-        pattern_dicts: &HashMap<u32, Vec<Bitmap>>,
+        pattern_dicts: &HashMap<u32, Vec<Arc<Bitmap>>>,
     ) -> Jbig2Result<(HalftoneRegionHeader, Bitmap)> {
         let mut patterns: Vec<&Bitmap> = Vec::new();
         for ref_no in &self.segments[idx].header.referred {
             if let Some(pats) = pattern_dicts.get(ref_no) {
-                patterns.extend(pats.iter());
+                patterns.extend(pats.iter().map(Arc::as_ref));
             }
         }
         if patterns.is_empty() {
-            let page_assoc = self.segments[idx].header.page_association;
-            let mut latest: Option<&Vec<Bitmap>> = None;
-            for prior in &self.segments[..idx] {
-                if !matches!(prior.header.segment_type, SegmentType::PatternDictionary) {
-                    continue;
+            for ref_no in fallback_referred_numbers(
+                &self.segments,
+                idx,
+                |kind| matches!(kind, SegmentType::PatternDictionary),
+                FallbackPolicy::LatestOnly,
+            ) {
+                if let Some(pats) = pattern_dicts.get(&ref_no) {
+                    patterns.extend(pats.iter().map(Arc::as_ref));
                 }
-                let p = prior.header.page_association;
-                if p == 0 || p == page_assoc {
-                    if let Some(pats) = pattern_dicts.get(&prior.header.number) {
-                        latest = Some(pats);
-                    }
-                }
-            }
-            if let Some(pats) = latest {
-                patterns.extend(pats.iter());
             }
             if patterns.is_empty() {
                 return Err(Jbig2Error::OutOfRange(
@@ -710,28 +717,17 @@ impl<R: Read + Seek> Jbig2Decoder<R> {
             reader,
             segments,
             body_scratch,
-            generic_mq_cxs,
+            mq_cxs,
             ..
         } = self;
         let seg = &segments[idx];
-        let data_len = seg.data_len as usize;
-        reader
-            .seek(SeekFrom::Start(seg.data_offset))
-            .map_err(Jbig2Error::from)?;
-        body_scratch.resize(data_len, 0);
-        reader
-            .read_exact(&mut body_scratch[..data_len])
-            .map_err(Jbig2Error::from)?;
-        let body: &[u8] = &body_scratch[..data_len];
-        let mut cur = Cursor::new(body);
-        let header = HalftoneRegionHeader::read(&mut cur)?;
-        let header_len = cur.position() as usize;
-        let coded = &body[header_len..];
+        let body = read_segment_body(reader, body_scratch, seg)?;
+        let (header, coded) = parse_segment_header(body, |cur| HalftoneRegionHeader::read(cur))?;
         let region = halftone_region::decode_halftone_region_with_contexts(
             &header,
             coded,
             &patterns,
-            generic_mq_cxs,
+            mq_cxs,
         )?;
         Ok((header, region))
     }
@@ -740,32 +736,16 @@ impl<R: Read + Seek> Jbig2Decoder<R> {
         &mut self,
         idx: usize,
     ) -> Jbig2Result<(GenericRegionHeader, Bitmap)> {
-        // Split-borrow the decoder so we can hold `body_scratch` (read) and
-        // `generic_mq_cxs` (mut) simultaneously. Going through
-        // [`Self::read_segment_body`] would tie the body slice's lifetime
-        // to `&mut self`, blocking the concurrent mut borrow of the
-        // context pool.
         let Self {
             reader,
             segments,
             body_scratch,
-            generic_mq_cxs,
+            mq_cxs,
             ..
         } = self;
         let seg = &segments[idx];
-        let data_len = seg.data_len as usize;
-        reader
-            .seek(SeekFrom::Start(seg.data_offset))
-            .map_err(Jbig2Error::from)?;
-        body_scratch.resize(data_len, 0);
-        reader
-            .read_exact(&mut body_scratch[..data_len])
-            .map_err(Jbig2Error::from)?;
-        let body: &[u8] = &body_scratch[..data_len];
-        let mut cur = Cursor::new(body);
-        let header = GenericRegionHeader::read(&mut cur)?;
-        let header_len = cur.position() as usize;
-        let coded = &body[header_len..];
+        let body = read_segment_body(reader, body_scratch, seg)?;
+        let (header, coded) = parse_segment_header(body, |cur| GenericRegionHeader::read(cur))?;
         let bitmap = if header.mmr {
             #[cfg(feature = "mmr")]
             {
@@ -779,9 +759,9 @@ impl<R: Read + Seek> Jbig2Decoder<R> {
             // The context pool is per-region per spec §7.4.2.1, so we
             // reset the decoder-owned pool here instead of allocating a
             // fresh [`MqContexts`] every time.
-            generic_mq_cxs.reset();
+            mq_cxs.reset();
             let mut dec = MqDecoder::new(coded);
-            generic_region::decode_generic_arith(&mut dec, generic_mq_cxs, &header)?
+            generic_region::decode_generic_arith(&mut dec, mq_cxs, &header)?
         };
         Ok((header, bitmap))
     }
@@ -812,23 +792,12 @@ impl<R: Read + Seek> Jbig2Decoder<R> {
             reader,
             segments,
             body_scratch,
-            generic_mq_cxs,
+            mq_cxs,
             ..
         } = self;
         let seg = &segments[idx];
-        let data_len = seg.data_len as usize;
-        reader
-            .seek(SeekFrom::Start(seg.data_offset))
-            .map_err(Jbig2Error::from)?;
-        body_scratch.resize(data_len, 0);
-        reader
-            .read_exact(&mut body_scratch[..data_len])
-            .map_err(Jbig2Error::from)?;
-        let body: &[u8] = &body_scratch[..data_len];
-        let mut cur = Cursor::new(body);
-        let header = RefinementRegionHeader::read(&mut cur)?;
-        let header_len = cur.position() as usize;
-        let coded = &body[header_len..];
+        let body = read_segment_body(reader, body_scratch, seg)?;
+        let (header, coded) = parse_segment_header(body, |cur| RefinementRegionHeader::read(cur))?;
 
         // Locate the reference bitmap + its placement on the page so we
         // can crop/pad it to the refinement-region coordinate system.
@@ -837,16 +806,16 @@ impl<R: Read + Seek> Jbig2Decoder<R> {
 
         // Spec §7.4.2.1: contexts reset per region, so we reuse the
         // decoder-owned pool rather than allocating a fresh one.
-        generic_mq_cxs.reset();
+        mq_cxs.reset();
         let mut dec = MqDecoder::new(coded);
         let region = refinement_region::decode_refinement_region(
             &mut dec,
-            generic_mq_cxs,
+            mq_cxs,
             header.region.width,
             header.region.height,
             header.template,
             header.tpgron,
-            &header.at,
+            &header.at.to_array_2(),
             &reference,
             reference_dx,
             reference_dy,
@@ -862,15 +831,15 @@ impl<R: Read + Seek> Jbig2Decoder<R> {
 /// not carry a GRREFERENCEDX/DY field on the wire — any offset lives in
 /// the placement of the referred-to region). Otherwise we fall back to
 /// the page bitmap masked to the refinement region's box.
-fn refinement_reference_for(
-    referred: &[u32],
-    region_bitmaps: &HashMap<u32, Bitmap>,
-    page: &Bitmap,
-    header: &RefinementRegionHeader,
-) -> Jbig2Result<(Bitmap, i32, i32)> {
+fn refinement_reference_for<'a>(
+    referred: &'a [u32],
+    region_bitmaps: &'a HashMap<u32, Bitmap>,
+    page: &'a Bitmap,
+    header: &'a RefinementRegionHeader,
+) -> Jbig2Result<(Cow<'a, Bitmap>, i32, i32)> {
     for seg_no in referred {
         if let Some(bm) = region_bitmaps.get(seg_no) {
-            return Ok((bm.clone(), 0, 0));
+            return Ok((Cow::Borrowed(bm), 0, 0));
         }
     }
     // Fall back to the page bitmap clipped to the region box. This mirrors
@@ -878,14 +847,8 @@ fn refinement_reference_for(
     let w = header.region.width;
     let h = header.region.height;
     let mut bm = Bitmap::new(w, h)?;
-    let dst_op = crate::bitmap::BlitOp::Replace;
-    bm.composite(
-        page,
-        -(header.region.x as i32),
-        -(header.region.y as i32),
-        dst_op,
-    );
-    Ok((bm, 0, 0))
+    bm.composite(page, -(header.region.x as i32), -(header.region.y as i32), crate::bitmap::BlitOp::Replace);
+    Ok((Cow::Owned(bm), 0, 0))
 }
 
 fn composite_region(
@@ -914,19 +877,8 @@ fn composite_region(
     // Shared packed-row blit: clipping, alignment, and op dispatch all live
     // inside [`Bitmap::composite`], so this replaces the old pixel-by-pixel
     // composite loop with a single byte-level pass per row.
-    page.composite(region, x0 as i32, y0 as i32, combop_to_blit(op));
+    page.composite(region, x0 as i32, y0 as i32, op.into());
     Ok(())
-}
-
-#[inline]
-fn combop_to_blit(op: CombinationOp) -> BlitOp {
-    match op {
-        CombinationOp::Or => BlitOp::Or,
-        CombinationOp::And => BlitOp::And,
-        CombinationOp::Xor => BlitOp::Xor,
-        CombinationOp::XNor => BlitOp::XNor,
-        CombinationOp::Replace => BlitOp::Replace,
-    }
 }
 
 fn grow_bitmap(bm: &mut Bitmap, new_height: u32, fill: u8) -> Jbig2Result<()> {
@@ -1197,7 +1149,7 @@ mod tests {
             &target,
             rr_hdr.template,
             rr_hdr.tpgron,
-            &rr_hdr.at,
+            &rr_hdr.at.to_array_2(),
             &reference,
             0,
             0,

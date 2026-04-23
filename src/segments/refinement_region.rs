@@ -15,13 +15,18 @@
 //! prediction: for rows with `LTP = 1`, any pixel whose 3×3 reference
 //! neighbourhood is uniform is reconstructed from that neighbourhood
 //! without consulting the arithmetic coder at all.
+//!
+//! TODO(perf): the encoder still builds refinement contexts with per-pixel
+//! `get_pixel` calls. If lossy symbol matching with refine-after-match becomes
+//! a dominant workload, add a sliding-register fast path analogous to the
+//! template-0 generic-region encoder.
 
 use std::io::{Read, Write};
 
 use crate::bitmap::Bitmap;
 use crate::coding::mq::{MqContexts, MqDecoder, MqEncoder};
 use crate::error::{Jbig2Error, Jbig2Result};
-use crate::segments::region_info::RegionInfo;
+use crate::segments::{AtPixels, region_info::RegionInfo};
 
 /// SLTP context index used when `TPGRON = 1`. The spec leaves the bit
 /// assignment for the refinement template up to each implementation; we
@@ -45,7 +50,7 @@ pub struct RefinementRegionHeader {
     pub tpgron: bool,
     /// Adaptive template pixels (`GRAT0x/y` target + `GRAT1x/y` reference).
     /// Only meaningful for `template = 0`.
-    pub at: [(i8, i8); 2],
+    pub at: AtPixels,
 }
 
 impl RefinementRegionHeader {
@@ -70,7 +75,7 @@ impl RefinementRegionHeader {
             region,
             template,
             tpgron,
-            at,
+            at: AtPixels::from_array(at),
         })
     }
 
@@ -81,7 +86,7 @@ impl RefinementRegionHeader {
         w.write_all(&[flags])?;
         if self.template == 0 {
             for i in 0..2 {
-                w.write_all(&[self.at[i].0 as u8, self.at[i].1 as u8])?;
+                    w.write_all(&[self.at[i].0 as u8, self.at[i].1 as u8])?;
             }
         }
         Ok(())
@@ -91,7 +96,10 @@ impl RefinementRegionHeader {
 /// Default AT pixel positions for a refinement region. The spec nominal
 /// placement is `(-1, -1)` for both the target-neighbourhood AT pixel
 /// (index 0) and the reference-neighbourhood AT pixel (index 1).
-pub const NOMINAL_REFINEMENT_AT: [(i8, i8); 2] = [(-1, -1), (-1, -1)];
+pub const NOMINAL_REFINEMENT_AT: AtPixels = AtPixels::new(
+    [(-1, -1), (-1, -1), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0)],
+    2,
+);
 
 /// Decode a refinement region bitmap of size `width × height` against a
 /// reference bitmap, using the arithmetic MQ coder.
@@ -365,7 +373,7 @@ mod tests {
             },
             template: 0,
             tpgron: false,
-            at: [(-1, -1), (-1, -1)],
+            at: NOMINAL_REFINEMENT_AT,
         };
         let mut buf = Vec::new();
         hdr.write(&mut buf).unwrap();
@@ -387,7 +395,7 @@ mod tests {
             },
             template: 1,
             tpgron: true,
-            at: [(0, 0); 2],
+            at: AtPixels::from_array([(0, 0); 2]),
         };
         let mut buf = Vec::new();
         hdr.write(&mut buf).unwrap();
@@ -431,7 +439,7 @@ mod tests {
     fn round_trip_one(
         template: u8,
         tpgron: bool,
-        at: [(i8, i8); 2],
+        at: AtPixels,
         target: &Bitmap,
         reference: &Bitmap,
         dx: i32,
@@ -440,7 +448,15 @@ mod tests {
         let mut enc_cxs = MqContexts::new(MQ_NUM_CONTEXTS);
         let mut enc = MqEncoder::new(target.data().len());
         encode_refinement_region(
-            &mut enc, &mut enc_cxs, target, template, tpgron, &at, reference, dx, dy,
+            &mut enc,
+            &mut enc_cxs,
+            target,
+            template,
+            tpgron,
+            &at.to_array_2(),
+            reference,
+            dx,
+            dy,
         )
         .unwrap();
         let coded = enc.finish();
@@ -454,7 +470,7 @@ mod tests {
             target.height(),
             template,
             tpgron,
-            &at,
+            &at.to_array_2(),
             reference,
             dx,
             dy,
@@ -497,7 +513,7 @@ mod tests {
         let reference = corrupt(&target, 5);
         // Push both AT pixels off their nominal positions to exercise the
         // override paths.
-        let at = [(-2, 0), (0, -1)];
+        let at = AtPixels::from_array([(-2, 0), (0, -1)]);
         round_trip_one(0, false, at, &target, &reference, 0, 0);
     }
 

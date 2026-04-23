@@ -85,6 +85,8 @@ impl RgbBitmap {
 
     /// Paint a 1-bpp mask into the bitmap using a solid colour.
     pub fn composite_mask_color(&mut self, mask: &Bitmap, x0: i32, y0: i32, rgb: [u8; 3]) {
+        // TODO(perf): add a packed-row mask walker so large AMD3 regions do
+        // not pay one get_pixel/set_pixel pair per foreground bit.
         for y in 0..mask.height() as i32 {
             for x in 0..mask.width() as i32 {
                 if mask.get_pixel(x, y) != 0 {
@@ -96,6 +98,8 @@ impl RgbBitmap {
 
     /// Replace-copy another RGB bitmap into this one with clipping.
     pub fn composite_replace(&mut self, src: &RgbBitmap, x0: i32, y0: i32) {
+        // TODO(perf): switch to row copies / clipped spans once colour pages
+        // become hot enough to justify a packed fast path here.
         for y in 0..src.height as i32 {
             let dy = y0 + y;
             if dy < 0 || dy >= self.height as i32 {
