@@ -493,8 +493,145 @@ impl<'a> MqDecoder<'a> {
 }
 
 #[cfg(test)]
+mod decode_legacy {
+    use super::*;
+
+    pub(super) struct LegacyMqDecoder<'a> {
+        a_reg: u32,
+        c_reg: u32,
+        ct: i32,
+        b: u8,
+        buf: &'a [u8],
+        pos: usize,
+    }
+
+    impl<'a> LegacyMqDecoder<'a> {
+        pub(super) fn new(buf: &'a [u8]) -> Self {
+            let mut d = Self {
+                a_reg: 0x8000,
+                c_reg: 0,
+                ct: 0,
+                b: 0,
+                buf,
+                pos: 0,
+            };
+            d.b = d.read_byte();
+            d.c_reg = (d.b as u32) << 16;
+            d.byte_in();
+            d.c_reg <<= 7;
+            d.ct -= 7;
+            d
+        }
+
+        #[inline]
+        fn read_byte(&mut self) -> u8 {
+            if self.pos < self.buf.len() {
+                let b = self.buf[self.pos];
+                self.pos += 1;
+                b
+            } else {
+                0xFF
+            }
+        }
+
+        #[inline]
+        fn byte_in(&mut self) {
+            if self.pos < self.buf.len() {
+                if self.b == 0xFF {
+                    if self.buf[self.pos] > 0x8F {
+                        self.pos += 1;
+                        self.ct = 8;
+                    } else {
+                        let nb = self.buf[self.pos];
+                        self.pos += 1;
+                        self.b = nb;
+                        self.c_reg = self.c_reg.wrapping_add((nb as u32) << 9);
+                        self.ct = 7;
+                    }
+                } else {
+                    let nb = self.buf[self.pos];
+                    self.pos += 1;
+                    self.b = nb;
+                    self.c_reg = self.c_reg.wrapping_add((nb as u32) << 8);
+                    self.ct = 8;
+                }
+            } else {
+                self.c_reg = self.c_reg.wrapping_add(0xFF00);
+                self.ct = 8;
+            }
+        }
+
+        #[inline]
+        pub(super) fn decode(&mut self, cxs: &mut MqContexts, cx: usize) -> u8 {
+            let state = cxs.get_mut(cx);
+            let index = state.index() as usize;
+            let mps_bit = state.mps_bit();
+            let entry = QE_TABLE[index];
+            let qe = entry.qe as u32;
+
+            let c_high = (self.c_reg >> 16) & 0xFFFF;
+            self.a_reg = self.a_reg.wrapping_sub(qe);
+
+            let d: u8;
+            if c_high < qe {
+                if self.a_reg >= qe {
+                    self.a_reg = qe;
+                    d = mps_bit ^ 0x80;
+                    let mut ns = entry.nlps;
+                    if entry.switch {
+                        ns |= mps_bit ^ 0x80;
+                    } else {
+                        ns |= mps_bit;
+                    }
+                    *state = CxState(ns);
+                } else {
+                    self.a_reg = qe;
+                    d = mps_bit;
+                    *state = CxState(entry.nmps | mps_bit);
+                }
+            } else {
+                self.c_reg = self.c_reg.wrapping_sub(qe << 16);
+                if self.a_reg & 0x8000 == 0 {
+                    if self.a_reg < qe {
+                        d = mps_bit ^ 0x80;
+                        let mut ns = entry.nlps;
+                        if entry.switch {
+                            ns |= mps_bit ^ 0x80;
+                        } else {
+                            ns |= mps_bit;
+                        }
+                        *state = CxState(ns);
+                    } else {
+                        d = mps_bit;
+                        *state = CxState(entry.nmps | mps_bit);
+                    }
+                } else {
+                    d = mps_bit;
+                }
+            }
+
+            while self.a_reg & 0x8000 == 0 {
+                if self.ct == 0 {
+                    self.byte_in();
+                }
+                self.a_reg <<= 1;
+                self.c_reg <<= 1;
+                self.ct -= 1;
+            }
+
+            if d == 0 { 0 } else { 1 }
+        }
+
+        pub(super) fn state(&self) -> (u32, u32, i32, u8, usize) {
+            (self.a_reg, self.c_reg, self.ct, self.b, self.pos)
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+    use super::decode_legacy::LegacyMqDecoder;
     use rand::{Rng, SeedableRng};
     use rand_xoshiro::Xoshiro256PlusPlus;
 
@@ -537,6 +674,16 @@ mod tests {
         (0..256).map(|_| rng.gen_range(0..2u8)).collect()
     }
 
+    fn encode_bits(bits: &[u8]) -> Vec<u8> {
+        let mut enc_cx = MqContexts::new(16);
+        let mut enc = MqEncoder::new(bits.len() / 8 + 4);
+        for &b in bits {
+            let cx = (b as usize) & 0xF;
+            enc.encode(&mut enc_cx, cx, b);
+        }
+        enc.finish()
+    }
+
     #[test]
     fn round_trip_alternating_bits() {
         let v: Vec<u8> = (0..512u32).map(|i| (i & 1) as u8).collect();
@@ -573,13 +720,58 @@ mod tests {
     #[test]
     fn mq_termination_byte_count_is_stable() {
         let bits = stable_bits();
-        let mut cxs = MqContexts::new(16);
-        let mut enc = MqEncoder::new(bits.len() / 8 + 4);
-        for &b in &bits {
-            let cx = (b as usize) & 0xF;
-            enc.encode(&mut cxs, cx, b);
-        }
-        let out = enc.finish();
+        let out = encode_bits(&bits);
         assert_eq!(out, vec![85, 255, 127, 240]);
+    }
+
+    #[test]
+    fn differential_shadow_decoder_matches_legacy() {
+        let mut rng = Xoshiro256PlusPlus::seed_from_u64(0xA11C_E5E1_5EED_u64);
+
+        for case_idx in 0..10_000usize {
+            let len = match case_idx % 8 {
+                0 => 0,
+                1 => 1,
+                2 => 2,
+                3 => 17,
+                4 => 64,
+                5 => 255,
+                6 => 511,
+                _ => rng.gen_range(3..192usize),
+            };
+
+            let bits: Vec<u8> = match case_idx % 4 {
+                0 => vec![0; len],
+                1 => vec![1; len],
+                2 => (0..len)
+                    .map(|_| if rng.gen_range(0..100u32) < 5 { 1 } else { 0 })
+                    .collect(),
+                _ => (0..len).map(|_| rng.gen_range(0..2u8)).collect(),
+            };
+
+            let out = encode_bits(&bits);
+            let mut new_cx = MqContexts::new(16);
+            let mut old_cx = MqContexts::new(16);
+            let mut new_dec = MqDecoder::new(&out);
+            let mut old_dec = LegacyMqDecoder::new(&out);
+
+            for (bit_idx, &bit) in bits.iter().enumerate() {
+                let cx = (bit as usize) & 0xF;
+                let new_bit = new_dec.decode(&mut new_cx, cx);
+                let old_bit = old_dec.decode(&mut old_cx, cx);
+                assert_eq!(new_bit, old_bit, "bit mismatch in case {case_idx} at {bit_idx}");
+                assert_eq!(new_bit, bit, "decode mismatch in case {case_idx} at {bit_idx}");
+                assert_eq!(
+                    new_dec.state(),
+                    old_dec.state(),
+                    "state mismatch in case {case_idx} at {bit_idx}"
+                );
+                assert_eq!(
+                    new_cx.as_mut_slice(),
+                    old_cx.as_mut_slice(),
+                    "context mismatch in case {case_idx} at {bit_idx}"
+                );
+            }
+        }
     }
 }
