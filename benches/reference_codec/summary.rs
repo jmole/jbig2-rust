@@ -17,13 +17,48 @@ pub(crate) struct ProbeRecord {
     pub(crate) compressed_bytes: u64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TimingSource {
+    CriterionTracked,
+    InformationalSubprocess,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct TimingRecord {
+    pub(crate) side: &'static str,
+    pub(crate) tool: &'static str,
+    pub(crate) case: &'static str,
+    pub(crate) mean_ns: f64,
+    pub(crate) source: TimingSource,
+}
+
 fn probes() -> &'static Mutex<Vec<ProbeRecord>> {
     static R: OnceLock<Mutex<Vec<ProbeRecord>>> = OnceLock::new();
     R.get_or_init(|| Mutex::new(Vec::new()))
 }
 
+fn external_timings() -> &'static Mutex<Vec<TimingRecord>> {
+    static T: OnceLock<Mutex<Vec<TimingRecord>>> = OnceLock::new();
+    T.get_or_init(|| Mutex::new(Vec::new()))
+}
+
 pub(crate) fn record(r: ProbeRecord) {
     probes().lock().unwrap().push(r);
+}
+
+pub(crate) fn record_external_timing(
+    side: &'static str,
+    tool: &'static str,
+    case: &'static str,
+    mean_ns: f64,
+) {
+    external_timings().lock().unwrap().push(TimingRecord {
+        side,
+        tool,
+        case,
+        mean_ns,
+        source: TimingSource::InformationalSubprocess,
+    });
 }
 
 /// Extract Criterion's mean point estimate (nanoseconds per iteration) from
@@ -57,6 +92,38 @@ pub(crate) fn estimates_path(side: &str, tool: &str, case: &str) -> PathBuf {
         .join(case)
         .join("new")
         .join("estimates.json")
+}
+
+pub(crate) fn timing_for(side: &str, tool: &str, case: &str) -> Option<TimingRecord> {
+    if tool == "rust" {
+        let side = match side {
+            "decode" => "decode",
+            "encode" => "encode",
+            _ => return None,
+        };
+        let case = match (side, case) {
+            ("decode", "tt9_mmr") => "tt9_mmr",
+            ("decode", "tt10_arith") => "tt10_arith",
+            ("encode", "tt9_page") => "tt9_page",
+            ("encode", "tt10_page") => "tt10_page",
+            _ => return None,
+        };
+        let mean_ns = parse_mean_ns(&estimates_path(side, tool, case))?;
+        return Some(TimingRecord {
+            side,
+            tool: "rust",
+            case,
+            mean_ns,
+            source: TimingSource::CriterionTracked,
+        });
+    }
+
+    external_timings()
+        .lock()
+        .unwrap()
+        .iter()
+        .copied()
+        .find(|record| record.side == side && record.tool == tool && record.case == case)
 }
 
 fn fmt_ns(ns: f64) -> String {
@@ -119,20 +186,29 @@ pub(crate) fn print_summary() {
             let _ = writeln!(stderr, "{side}/{case}");
             let _ = writeln!(
                 stderr,
-                "  {:<10} {:>12} {:>14} {:>12} {:>9}",
-                "tool", "mean", "throughput", "bytes", "ratio"
+                "  rust rows are tracked Criterion regressions; external tools are informational wall-clock comparisons only."
             );
-            let _ = writeln!(stderr, "  {}", "-".repeat(61));
+            let _ = writeln!(
+                stderr,
+                "  {:<10} {:>12} {:>14} {:>12} {:>9} {:>13}",
+                "tool", "mean", "throughput", "bytes", "ratio", "scope"
+            );
+            let _ = writeln!(stderr, "  {}", "-".repeat(75));
 
             for r in tools {
-                let est = estimates_path(r.side, r.tool, r.case);
-                let (time_str, tput_str) = match parse_mean_ns(&est) {
-                    Some(ns) => {
+                let timing = timing_for(r.side, r.tool, r.case);
+                let (time_str, tput_str, scope_str) = match timing {
+                    Some(timing) => {
+                        let ns = timing.mean_ns;
                         let seconds = ns / 1e9;
                         let mib_s = (r.raw_bytes as f64) / seconds / (1024.0 * 1024.0);
-                        (fmt_ns(ns), format!("{mib_s:.1} MiB/s"))
+                        let scope = match timing.source {
+                            TimingSource::CriterionTracked => "tracked",
+                            TimingSource::InformationalSubprocess => "informational",
+                        };
+                        (fmt_ns(ns), format!("{mib_s:.1} MiB/s"), scope.to_string())
                     }
-                    None => ("n/a".to_string(), "n/a".to_string()),
+                    None => ("n/a".to_string(), "n/a".to_string(), "missing".to_string()),
                 };
                 let ratio = if r.compressed_bytes == 0 {
                     "  n/a".to_string()
@@ -141,8 +217,8 @@ pub(crate) fn print_summary() {
                 };
                 let _ = writeln!(
                     stderr,
-                    "  {:<10} {:>12} {:>14} {:>12} {:>9}",
-                    r.tool, time_str, tput_str, r.compressed_bytes, ratio
+                    "  {:<10} {:>12} {:>14} {:>12} {:>9} {:>13}",
+                    r.tool, time_str, tput_str, r.compressed_bytes, ratio, scope_str
                 );
             }
         }
@@ -151,7 +227,7 @@ pub(crate) fn print_summary() {
     let _ = writeln!(stderr);
     let _ = writeln!(
         stderr,
-        "Columns: mean = Criterion point estimate, throughput = raw page bytes / mean,"
+        "Columns: mean = Criterion estimate for rust rows, custom wall-clock sample mean for external rows,"
     );
     let _ = writeln!(
         stderr,
