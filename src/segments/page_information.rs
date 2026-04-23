@@ -28,6 +28,11 @@ impl CombinationOp {
             _ => Self::Replace,
         }
     }
+
+    /// Encode the operator into the 3-bit segment-header form.
+    pub fn to_u8(self) -> u8 {
+        self as u8
+    }
 }
 
 /// Decoded page information segment.

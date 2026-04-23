@@ -231,6 +231,15 @@ impl<'a> HuffReader<'a> {
     pub fn byte_pos(&self) -> usize {
         self.byte
     }
+
+    /// Advance the read pointer by `n` whole bytes. The reader must be
+    /// byte-aligned at the time of the call (caller's responsibility);
+    /// useful for skipping past raw sections (uncompressed bitmaps,
+    /// MMR-coded payloads) that the Huffman bit reader does not consume.
+    pub fn skip_bytes(&mut self, n: usize) {
+        debug_assert_eq!(self.bit, 0, "skip_bytes requires byte alignment");
+        self.byte += n;
+    }
 }
 
 /// Bit-level MSB-first writer with zero padding on flush.

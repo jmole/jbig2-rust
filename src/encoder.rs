@@ -1,9 +1,8 @@
-//! High-level JBIG2 encoder (single-page, generic-region-only in v1).
+//! High-level JBIG2 encoder.
 //!
 //! The encoder emits a minimal sequential-organization JBIG2 file with one
-//! page information segment, one generic-region segment (arithmetic, MMR, or
-//! Huffman-free generic), and one end-of-page segment. Symbol-dictionary and
-//! text-region emission will be added in M3; refinement in M4.
+//! page information segment plus either a generic region, a symbol dictionary
+//! + text region, or a pattern dictionary + halftone region.
 //!
 //! See [`EncoderConfig`] for the tunables surfaced to callers.
 
@@ -15,10 +14,14 @@ use crate::error::{Jbig2Error, Jbig2Result};
 use crate::segments::{
     file_header::FileHeader,
     generic_region::{encode_generic_arith, encode_generic_mmr, nominal_at, GenericRegionHeader},
+    halftone_region::{encode_halftone_region, HalftoneRegionHeader},
     page_information::{CombinationOp, PageInformation},
+    pattern_dictionary::{encode_pattern_dictionary, PatternDictionaryHeader},
     region_info::RegionInfo,
     symbol_dictionary::{encode_symbol_dictionary, SymbolDictionaryHeader},
-    text_region::{encode_text_region, RefCorner, SymbolInstance, TextRegionHeader},
+    text_region::{
+        encode_text_region, RefCorner, RefinedInstance, SymbolInstance, TextRegionHeader,
+    },
     SegmentHeader, SegmentType,
 };
 use crate::symbol::{
@@ -70,12 +73,62 @@ pub enum Coding {
 pub enum Mode {
     /// Emit the whole page as a single generic region.
     Generic,
-    /// Extract exact-match symbols, encode a symbol dictionary + text region
-    /// (M3 — currently falls back to [`Mode::Generic`]).
+    /// Extract exact-match symbols and emit a symbol dictionary + text region.
     SymbolLossless,
-    /// Lossy classifier + dictionary refinement (M7 — currently falls back
-    /// to [`Mode::Generic`]).
+    /// Lossy classifier + optional refinement-against-dictionary instances.
     SymbolLossy,
+}
+
+/// Direct symbol-coding strategy for [`Jbig2Encoder::write_page_symbols`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
+pub enum SymbolCoding {
+    /// Exact-match deduplication only.
+    Lossless,
+    /// Lossy clustering with an optional refinement pass to recover the
+    /// original glyph shapes.
+    Lossy {
+        /// Fractional similarity threshold passed to the lossy classifier.
+        threshold: f32,
+        /// Emit refinement data for instances that differ from the chosen
+        /// dictionary representative.
+        refine_after_match: bool,
+    },
+}
+
+/// Page-local geometry for [`Jbig2Encoder::write_page_halftone`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HalftonePageOptions {
+    /// Page width in pixels.
+    pub page_width: u32,
+    /// Page height in pixels.
+    pub page_height: u32,
+    /// Region X position on the page.
+    pub region_x: u32,
+    /// Region Y position on the page.
+    pub region_y: u32,
+    /// Region width in pixels.
+    pub region_width: u32,
+    /// Region height in pixels.
+    pub region_height: u32,
+    /// `HENABLESKIP`.
+    pub enable_skip: bool,
+    /// `HCOMBOP`.
+    pub comb_op: CombinationOp,
+    /// `HDEFPIXEL`.
+    pub default_pixel: u8,
+    /// `HGW`.
+    pub grid_width: u32,
+    /// `HGH`.
+    pub grid_height: u32,
+    /// `HGX` (scaled by 256).
+    pub grid_x: i32,
+    /// `HGY` (scaled by 256).
+    pub grid_y: i32,
+    /// `HRX` (scaled by 256).
+    pub step_x: u16,
+    /// `HRY` (scaled by 256).
+    pub step_y: u16,
 }
 
 /// Encoder tunables. The three named constructors [`EncoderConfig::fast`],
@@ -149,6 +202,17 @@ impl EncoderConfig {
             multi_page: false,
         }
     }
+
+    fn symbol_coding(&self) -> Option<SymbolCoding> {
+        match self.mode {
+            Mode::Generic => None,
+            Mode::SymbolLossless => Some(SymbolCoding::Lossless),
+            Mode::SymbolLossy => Some(SymbolCoding::Lossy {
+                threshold: self.symbol_threshold,
+                refine_after_match: self.refinement && self.refine_after_match,
+            }),
+        }
+    }
 }
 
 impl Default for EncoderConfig {
@@ -187,6 +251,53 @@ impl<W: Write> Jbig2Encoder<W> {
         self
     }
 
+    fn begin_page(
+        &mut self,
+        width: u32,
+        height: u32,
+        is_lossless: bool,
+        may_contain_refinements: bool,
+        may_contain_colour: bool,
+    ) -> Jbig2Result<u32> {
+        self.ensure_file_header()?;
+        self.pages_emitted += 1;
+        let page_assoc = self.pages_emitted;
+
+        let page_info = PageInformation {
+            width,
+            height,
+            x_resolution: 0,
+            y_resolution: 0,
+            is_lossless,
+            may_contain_refinements,
+            default_pixel: 0,
+            default_combination_op: CombinationOp::Or,
+            requires_aux_buffers: false,
+            combination_op_override: false,
+            may_contain_colour,
+            is_striped: false,
+            maximum_stripe_size: 0,
+        };
+        self.emit_segment(
+            SegmentType::PageInformation,
+            page_assoc,
+            vec![],
+            vec![false],
+            |w| page_info.write(w),
+        )?;
+        Ok(page_assoc)
+    }
+
+    fn end_page(&mut self, page_assoc: u32) -> Jbig2Result<()> {
+        self.emit_segment(
+            SegmentType::EndOfPage,
+            page_assoc,
+            vec![],
+            vec![false],
+            |_w| Ok(()),
+        )
+    }
+
     fn ensure_file_header(&mut self) -> Jbig2Result<()> {
         if self.file_header_emitted {
             return Ok(());
@@ -205,49 +316,139 @@ impl<W: Write> Jbig2Encoder<W> {
 
     /// Encode one page bitmap.
     pub fn write_page(&mut self, bitmap: &Bitmap) -> Jbig2Result<()> {
-        self.ensure_file_header()?;
-        self.pages_emitted += 1;
-        let page_assoc = self.pages_emitted;
-
-        let page_info = PageInformation {
-            width: bitmap.width(),
-            height: bitmap.height(),
-            x_resolution: 0,
-            y_resolution: 0,
-            is_lossless: !matches!(self.cfg.mode, Mode::SymbolLossy),
-            may_contain_refinements: self.cfg.refinement,
-            default_pixel: 0,
-            default_combination_op: CombinationOp::Or,
-            requires_aux_buffers: false,
-            combination_op_override: false,
-            may_contain_colour: false,
-            is_striped: false,
-            maximum_stripe_size: 0,
-        };
-        self.emit_segment(
-            SegmentType::PageInformation,
-            page_assoc,
-            vec![],
-            vec![false],
-            |w| page_info.write(w),
-        )?;
-
-        match self.cfg.mode {
-            Mode::SymbolLossless => self.encode_page_symbol(bitmap, page_assoc, 1.0)?,
-            Mode::SymbolLossy => {
-                self.encode_page_symbol(bitmap, page_assoc, self.cfg.symbol_threshold)?
+        match self.cfg.symbol_coding() {
+            Some(coding) => self.write_page_symbols(bitmap, coding),
+            None => {
+                let page_assoc =
+                    self.begin_page(bitmap.width(), bitmap.height(), true, false, false)?;
+                self.encode_page_generic(bitmap, page_assoc)?;
+                self.end_page(page_assoc)
             }
-            Mode::Generic => self.encode_page_generic(bitmap, page_assoc)?,
+        }
+    }
+
+    /// Encode one page through the symbol-dictionary + text-region path.
+    pub fn write_page_symbols(
+        &mut self,
+        bitmap: &Bitmap,
+        coding: SymbolCoding,
+    ) -> Jbig2Result<()> {
+        let (symbol_threshold, may_contain_refinements, is_lossless) = match coding {
+            SymbolCoding::Lossless => (1.0, false, true),
+            SymbolCoding::Lossy {
+                threshold,
+                refine_after_match,
+            } => {
+                let refine = self.cfg.refinement && refine_after_match;
+                (threshold, refine, refine)
+            }
+        };
+        let page_assoc = self.begin_page(
+            bitmap.width(),
+            bitmap.height(),
+            is_lossless,
+            may_contain_refinements,
+            false,
+        )?;
+        self.encode_page_symbol(bitmap, page_assoc, symbol_threshold, coding)?;
+        self.end_page(page_assoc)
+    }
+
+    /// Encode one page from a caller-supplied pattern dictionary and halftone
+    /// grid. The arithmetic/MMR coding choice and template come from the
+    /// encoder's [`EncoderConfig`].
+    pub fn write_page_halftone(
+        &mut self,
+        patterns: &[Bitmap],
+        gray_values: &[u32],
+        opts: HalftonePageOptions,
+    ) -> Jbig2Result<()> {
+        if patterns.is_empty() {
+            return Err(Jbig2Error::InvalidConfig(
+                "halftone page: need at least one pattern",
+            ));
+        }
+        if gray_values.len() != (opts.grid_width as usize) * (opts.grid_height as usize) {
+            return Err(Jbig2Error::InvalidConfig(
+                "halftone page: gray-value count does not match grid dimensions",
+            ));
+        }
+        let pattern_w = patterns[0].width();
+        let pattern_h = patterns[0].height();
+        if patterns
+            .iter()
+            .any(|pat| pat.width() != pattern_w || pat.height() != pattern_h)
+        {
+            return Err(Jbig2Error::InvalidConfig(
+                "halftone page: mixed pattern sizes",
+            ));
         }
 
+        let page_assoc = self.begin_page(opts.page_width, opts.page_height, true, false, false)?;
+        let (template_id, _ext_template) = self.cfg.template.as_bits();
+        let halftone_template = template_id.min(3);
+        let pd_hdr = PatternDictionaryHeader {
+            hdmmr: matches!(self.cfg.coding, Coding::Mmr),
+            hd_template: halftone_template,
+            hdpw: u8::try_from(pattern_w)
+                .map_err(|_| Jbig2Error::InvalidConfig("halftone page: pattern width exceeds u8"))?,
+            hdph: u8::try_from(pattern_h).map_err(|_| {
+                Jbig2Error::InvalidConfig("halftone page: pattern height exceeds u8")
+            })?,
+            gray_max: patterns.len() as u32 - 1,
+        };
+        let pd_body = encode_pattern_dictionary(&pd_hdr, patterns)?;
+        let mut pd_hdr_bytes = Vec::new();
+        pd_hdr.write(&mut pd_hdr_bytes)?;
+        let pd_seg_no = self.seg_no;
         self.emit_segment(
-            SegmentType::EndOfPage,
+            SegmentType::PatternDictionary,
             page_assoc,
             vec![],
             vec![false],
-            |_w| Ok(()),
+            |w| {
+                w.write_all(&pd_hdr_bytes)?;
+                w.write_all(&pd_body)?;
+                Ok(())
+            },
         )?;
-        Ok(())
+
+        let ht_hdr = HalftoneRegionHeader {
+            region: RegionInfo {
+                width: opts.region_width,
+                height: opts.region_height,
+                x: opts.region_x,
+                y: opts.region_y,
+                external_combination_op: opts.comb_op,
+                colour_extension: false,
+            },
+            hmmr: matches!(self.cfg.coding, Coding::Mmr),
+            htemplate: halftone_template,
+            enable_skip: opts.enable_skip,
+            hcombop: opts.comb_op,
+            hdef_pixel: opts.default_pixel,
+            hgw: opts.grid_width,
+            hgh: opts.grid_height,
+            hgx: opts.grid_x,
+            hgy: opts.grid_y,
+            hrx: opts.step_x,
+            hry: opts.step_y,
+        };
+        let ht_body = encode_halftone_region(&ht_hdr, gray_values, patterns.len())?;
+        let mut ht_hdr_bytes = Vec::new();
+        ht_hdr.write(&mut ht_hdr_bytes)?;
+        self.emit_segment(
+            SegmentType::ImmediateLosslessHalftoneRegion,
+            page_assoc,
+            vec![pd_seg_no],
+            vec![false, false],
+            |w| {
+                w.write_all(&ht_hdr_bytes)?;
+                w.write_all(&ht_body)?;
+                Ok(())
+            },
+        )?;
+        self.end_page(page_assoc)
     }
 
     fn encode_page_generic(&mut self, bitmap: &Bitmap, page_assoc: u32) -> Jbig2Result<()> {
@@ -314,6 +515,7 @@ impl<W: Write> Jbig2Encoder<W> {
         bitmap: &Bitmap,
         page_assoc: u32,
         symbol_threshold: f32,
+        coding: SymbolCoding,
     ) -> Jbig2Result<()> {
         // Step 1: connected-component extraction.
         let comps = extract_components(bitmap);
@@ -375,56 +577,121 @@ impl<W: Write> Jbig2Encoder<W> {
         )?;
 
         // Step 4: build the text region instances in reading order (sorted
-        // by (y, x) so strips emit cleanly).
+        // by (y, x) so strips emit cleanly). When `refine_after_match` is
+        // set we emit each component whose original bitmap differs from the
+        // (possibly lossy-merged) dictionary representative as a refinement
+        // against that representative — that recovers exact-pixel fidelity
+        // even when the lossy classifier coalesced glyphs whose shapes
+        // disagree by a handful of pixels.
+        let want_refine = matches!(
+            coding,
+            SymbolCoding::Lossy {
+                refine_after_match: true,
+                ..
+            }
+        ) && self.cfg.refinement;
         let mut instances: Vec<SymbolInstance> = instance_symbol_raw
             .iter()
             .zip(comps.iter())
-            .map(|(&sym_idx, c)| SymbolInstance {
-                id: inv[sym_idx as usize],
-                x: c.x as i32,
-                y: c.y as i32,
+            .map(|(&sym_idx, c)| {
+                let dict_idx = inv[sym_idx as usize];
+                let mut ins = SymbolInstance::placement(dict_idx, c.x as i32, c.y as i32);
+                if want_refine {
+                    let dict_sym = &sorted_syms[dict_idx as usize];
+                    if c.bitmap != *dict_sym {
+                        ins.refinement = Some(RefinedInstance {
+                            rdw: c.bitmap.width() as i32 - dict_sym.width() as i32,
+                            rdh: c.bitmap.height() as i32 - dict_sym.height() as i32,
+                            rdx: 0,
+                            rdy: 0,
+                            target: c.bitmap.clone(),
+                        });
+                    }
+                }
+                ins
             })
             .collect();
         instances.sort_by_key(|i| (i.y, i.x));
+        let any_refined = instances.iter().any(|i| i.refinement.is_some());
 
         // Choose a strip height of 2 rows unless the page is very short.
         let log_sbstrips: u8 = if bitmap.height() < 4 { 0 } else { 1 };
 
-        let tr_hdr = TextRegionHeader {
-            region: RegionInfo {
-                width: bitmap.width(),
-                height: bitmap.height(),
-                x: 0,
-                y: 0,
-                external_combination_op: CombinationOp::Or,
-                colour_extension: false,
-            },
-            sbhuff: false,
-            sbrefine: false,
-            log_sbstrips,
-            ref_corner: RefCorner::TL,
-            transposed: false,
-            sbcombop: CombinationOp::Or,
-            default_pixel: 0,
-            sbds_offset: 0,
-            sbr_template: false,
-            rat: [(0, 0); 2],
-            num_instances: instances.len() as u32,
+        let emit_text_region = |this: &mut Self,
+                                region_y: u32,
+                                region_height: u32,
+                                region_instances: &[SymbolInstance]|
+         -> Jbig2Result<()> {
+            let tr_hdr = TextRegionHeader {
+                region: RegionInfo {
+                    width: bitmap.width(),
+                    height: region_height,
+                    x: 0,
+                    y: region_y,
+                    external_combination_op: CombinationOp::Or,
+                    colour_extension: false,
+                },
+                sbhuff: false,
+                sbrefine: any_refined,
+                log_sbstrips,
+                ref_corner: RefCorner::TL,
+                transposed: false,
+                sbcombop: CombinationOp::Or,
+                default_pixel: 0,
+                sbds_offset: 0,
+                sbr_template: false,
+                sbhuff_fs: 0,
+                sbhuff_ds: 0,
+                sbhuff_dt: 0,
+                sbhuff_rdw: 0,
+                sbhuff_rdh: 0,
+                sbhuff_rdx: 0,
+                sbhuff_rdy: 0,
+                sbhuff_rsize: false,
+                rat: [(0, 0); 2],
+                num_instances: region_instances.len() as u32,
+            };
+            let tr_body = encode_text_region(&tr_hdr, region_instances, &sorted_syms)?;
+            let mut tr_hdr_bytes = Vec::new();
+            tr_hdr.write(&mut tr_hdr_bytes)?;
+            this.emit_segment(
+                SegmentType::ImmediateLosslessTextRegion,
+                page_assoc,
+                vec![sd_seg_no],
+                vec![false, false],
+                |w| {
+                    w.write_all(&tr_hdr_bytes)?;
+                    w.write_all(&tr_body)?;
+                    Ok(())
+                },
+            )
         };
-        let tr_body = encode_text_region(&tr_hdr, &instances, &sorted_syms)?;
-        let mut tr_hdr_bytes = Vec::new();
-        tr_hdr.write(&mut tr_hdr_bytes)?;
-        self.emit_segment(
-            SegmentType::ImmediateLosslessTextRegion,
-            page_assoc,
-            vec![sd_seg_no],
-            vec![false, false],
-            |w| {
-                w.write_all(&tr_hdr_bytes)?;
-                w.write_all(&tr_body)?;
-                Ok(())
-            },
-        )?;
+
+        if any_refined {
+            let mut start = 0usize;
+            while start < instances.len() {
+                let baseline_y = instances[start].y;
+                let mut end = start + 1;
+                while end < instances.len() && instances[end].y == baseline_y {
+                    end += 1;
+                }
+                let mut local_instances = instances[start..end].to_vec();
+                let mut region_height = 0u32;
+                for ins in &mut local_instances {
+                    ins.y -= baseline_y;
+                    let ref_sym = &sorted_syms[ins.id as usize];
+                    let h = match &ins.refinement {
+                        Some(r) => r.target.height(),
+                        None => ref_sym.height(),
+                    };
+                    region_height = region_height.max(ins.y.max(0) as u32 + h);
+                }
+                emit_text_region(self, baseline_y as u32, region_height.max(1), &local_instances)?;
+                start = end;
+            }
+        } else {
+            emit_text_region(self, 0, bitmap.height(), &instances)?;
+        }
         Ok(())
     }
 
@@ -484,8 +751,9 @@ impl<W: Write> Jbig2Encoder<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::segments::{FileHeader, SegmentHeader};
     use crate::Jbig2Decoder;
-    use std::io::Cursor;
+    use std::io::{Cursor, Read};
 
     fn stripe_bitmap(w: u32, h: u32) -> Bitmap {
         let mut bm = Bitmap::new(w, h).unwrap();
@@ -538,6 +806,41 @@ mod tests {
         assert_eq!(page.bitmap, bm);
     }
 
+    #[test]
+    fn max_compression_preset_refines_lossy_variants() {
+        let bm = glyph_page_with_lossy_variants();
+        let mut buf = Vec::new();
+        let mut enc = Jbig2Encoder::new(&mut buf, EncoderConfig::max_compression());
+        enc.write_page(&bm).unwrap();
+        enc.finish().unwrap();
+
+        let mut dec = Jbig2Decoder::new(Cursor::new(buf.clone())).unwrap();
+        let mut saw_refined_text = false;
+        let mut cur = Cursor::new(buf);
+        let _fh = FileHeader::read(&mut cur).unwrap();
+        loop {
+            let seg = SegmentHeader::read(&mut cur).unwrap();
+            let mut body = vec![0u8; seg.data_length.unwrap_or(0) as usize];
+            cur.read_exact(&mut body).unwrap();
+            if matches!(
+                seg.segment_type,
+                SegmentType::ImmediateLosslessTextRegion
+                    | SegmentType::ImmediateTextRegion
+                    | SegmentType::IntermediateTextRegion
+            ) {
+                let hdr = TextRegionHeader::read(&mut body.as_slice()).unwrap();
+                saw_refined_text |= hdr.sbrefine;
+            }
+            if matches!(seg.segment_type, SegmentType::EndOfFile) {
+                break;
+            }
+        }
+        assert!(saw_refined_text, "max_compression should emit SBREFINE=1 when lossy matches need recovery");
+
+        let page = dec.decode_page(1).unwrap();
+        assert_eq!(page.bitmap, bm);
+    }
+
     /// Paint a few "glyph" rectangles so the identity classifier actually has
     /// duplicates to coalesce.
     fn glyph_page() -> Bitmap {
@@ -560,6 +863,89 @@ mod tests {
             }
         }
         bm
+    }
+
+    /// Build a page where the lossy classifier should bucket two
+    /// almost-identical glyph variants together. Returns the page
+    /// bitmap; running the symbol-lossless encoder with `symbol_threshold
+    /// = 0.85` and `refine_after_match = true` should pick one variant as
+    /// the dictionary representative and emit the other instances as
+    /// refinements against it, recovering the original page exactly.
+    fn glyph_page_with_lossy_variants() -> Bitmap {
+        let mut bm = Bitmap::new(200, 40).unwrap();
+        // Two near-identical 3x3 glyph variants. `glyph_b` differs by one
+        // extra center pixel only, so the WXOR disagreement is 1/8 = 0.125
+        // and the `0.85` preset threshold will merge them.
+        let glyph_a: &[(i32, i32)] =
+            &[(0, 0), (1, 0), (2, 0), (0, 1), (2, 1), (0, 2), (1, 2), (2, 2)];
+        let glyph_b: &[(i32, i32)] = &[
+            (0, 0),
+            (1, 0),
+            (2, 0),
+            (0, 1),
+            (1, 1),
+            (2, 1),
+            (0, 2),
+            (1, 2),
+            (2, 2),
+        ];
+        for row in 0..2 {
+            for col in 0..10 {
+                let shape = if col % 2 == 0 { glyph_a } else { glyph_b };
+                let x0 = 5 + (col as i32) * 18;
+                let y0 = 5 + (row as i32) * 18;
+                for &(dx, dy) in shape.iter() {
+                    bm.set_pixel(x0 + dx, y0 + dy, 1);
+                }
+            }
+        }
+        bm
+    }
+
+    #[test]
+    fn refine_after_match_round_trip_recovers_lossy_variants() {
+        let bm = glyph_page_with_lossy_variants();
+        let cfg = EncoderConfig {
+            mode: Mode::SymbolLossy,
+            template: GenericTemplate::T0,
+            coding: Coding::Arithmetic,
+            adaptive_templates: None,
+            refinement: true,
+            duplicate_line_removal: false,
+            symbol_threshold: 0.85,
+            refine_after_match: true,
+            multi_page: false,
+        };
+        let mut buf = Vec::new();
+        let mut enc = Jbig2Encoder::new(&mut buf, cfg);
+        enc.write_page(&bm).unwrap();
+        enc.finish().unwrap();
+
+        // The encoder should have exercised the SBREFINE = 1 path because
+        // the two glyph variants get bucketed onto a single representative.
+        let mut dec = Jbig2Decoder::new(Cursor::new(buf.clone())).unwrap();
+        let mut num_sd = 0;
+        let mut num_tr = 0;
+        for h in dec.segment_headers() {
+            match h.segment_type {
+                SegmentType::SymbolDictionary => num_sd += 1,
+                SegmentType::ImmediateLosslessTextRegion
+                | SegmentType::ImmediateTextRegion
+                | SegmentType::IntermediateTextRegion => num_tr += 1,
+                _ => {}
+            }
+        }
+        assert_eq!(num_sd, 1, "expected one symbol dictionary segment");
+        assert!(
+            num_tr >= 1,
+            "expected at least one text region segment"
+        );
+
+        let page = dec.decode_page(1).unwrap();
+        assert_eq!(
+            page.bitmap, bm,
+            "refinement-on encoder should recover the original page bit-for-bit"
+        );
     }
 
     #[test]
@@ -599,5 +985,78 @@ mod tests {
 
         let page = dec.decode_page(1).unwrap();
         assert_eq!(page.bitmap, bm);
+    }
+
+    #[test]
+    fn explicit_symbol_coding_entry_point_round_trip() {
+        let bm = glyph_page_with_lossy_variants();
+        let cfg = EncoderConfig {
+            refinement: true,
+            ..EncoderConfig::balanced()
+        };
+        let mut buf = Vec::new();
+        let mut enc = Jbig2Encoder::new(&mut buf, cfg);
+        enc.write_page_symbols(
+            &bm,
+            SymbolCoding::Lossy {
+                threshold: 0.85,
+                refine_after_match: true,
+            },
+        )
+        .unwrap();
+        enc.finish().unwrap();
+
+        let mut dec = Jbig2Decoder::new(Cursor::new(buf)).unwrap();
+        let page = dec.decode_page(1).unwrap();
+        assert_eq!(page.bitmap, bm);
+    }
+
+    #[test]
+    fn halftone_entry_point_round_trip() {
+        let mut p0 = Bitmap::new(3, 3).unwrap();
+        p0.set_pixel(1, 0, 1);
+        p0.set_pixel(0, 1, 1);
+        p0.set_pixel(1, 1, 1);
+        p0.set_pixel(2, 1, 1);
+        p0.set_pixel(1, 2, 1);
+
+        let mut p1 = Bitmap::new(3, 3).unwrap();
+        for i in 0..3 {
+            p1.set_pixel(i, i, 1);
+        }
+
+        let patterns = vec![p0.clone(), p1.clone()];
+        let gray = [0u32, 1, 1, 0];
+        let opts = HalftonePageOptions {
+            page_width: 10,
+            page_height: 10,
+            region_x: 0,
+            region_y: 0,
+            region_width: 10,
+            region_height: 10,
+            enable_skip: false,
+            comb_op: CombinationOp::Or,
+            default_pixel: 0,
+            grid_width: 2,
+            grid_height: 2,
+            grid_x: 0,
+            grid_y: 0,
+            step_x: 4 << 8,
+            step_y: 4 << 8,
+        };
+        let mut buf = Vec::new();
+        let mut enc = Jbig2Encoder::new(&mut buf, EncoderConfig::balanced());
+        enc.write_page_halftone(&patterns, &gray, opts).unwrap();
+        enc.finish().unwrap();
+
+        let mut expect = Bitmap::new(10, 10).unwrap();
+        expect.composite(&p0, 0, 0, crate::bitmap::BlitOp::Or);
+        expect.composite(&p1, 4, 4, crate::bitmap::BlitOp::Or);
+        expect.composite(&p1, 4, -4, crate::bitmap::BlitOp::Or);
+        expect.composite(&p0, 8, 0, crate::bitmap::BlitOp::Or);
+
+        let mut dec = Jbig2Decoder::new(Cursor::new(buf)).unwrap();
+        let page = dec.decode_page(1).unwrap();
+        assert_eq!(page.bitmap, expect);
     }
 }

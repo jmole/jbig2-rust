@@ -3,7 +3,13 @@
 
 use std::path::PathBuf;
 
-use jbig2::Bitmap;
+use jbig2::{Bitmap, RgbBitmap};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReferenceImage {
+    Mono(Bitmap),
+    Rgb(RgbBitmap),
+}
 
 /// Absolute path to the vendored JBIG2 conformance directory.
 pub fn conformance_dir() -> PathBuf {
@@ -14,15 +20,15 @@ pub fn conformance_dir() -> PathBuf {
         .join("JBIG2_ConformanceData-A20180829")
 }
 
-/// Load a 1-bpp BMP from the conformance directory and return it as a
-/// [`Bitmap`] where `1 = ink`, with `(0,0)` in the top-left corner.
-///
-/// The BMP files shipped by the reference use palette index `0 = black`,
-/// `1 = white`, so we invert on load to match the JBIG2 convention.
-pub fn load_conformance_bmp(name: &str) -> Bitmap {
+/// Load a conformance BMP from the vendored test set.
+pub fn load_conformance_bmp(name: &str) -> ReferenceImage {
     let path = conformance_dir().join(name);
     let data = std::fs::read(&path).unwrap_or_else(|e| panic!("read {path:?}: {e}"));
-    parse_bmp_1bpp(&data)
+    match u16::from_le_bytes(data[28..30].try_into().unwrap()) {
+        1 => ReferenceImage::Mono(parse_bmp_1bpp(&data)),
+        24 => ReferenceImage::Rgb(parse_bmp_24bpp(&data)),
+        bpp => panic!("unsupported conformance BMP bpp {bpp}"),
+    }
 }
 
 fn parse_bmp_1bpp(data: &[u8]) -> Bitmap {
@@ -66,6 +72,33 @@ fn parse_bmp_1bpp(data: &[u8]) -> Bitmap {
             let mask = 0xFFu8 << (8 - last_bits);
             let last = row.len() - 1;
             row[last] &= mask;
+        }
+    }
+    bm
+}
+
+fn parse_bmp_24bpp(data: &[u8]) -> RgbBitmap {
+    assert!(data.len() >= 54 && &data[0..2] == b"BM", "not a BMP file");
+    let pixel_offset = u32::from_le_bytes(data[10..14].try_into().unwrap()) as usize;
+    let dib_size = u32::from_le_bytes(data[14..18].try_into().unwrap()) as usize;
+    assert!(dib_size >= 40, "not a BITMAPINFOHEADER");
+    let width = i32::from_le_bytes(data[18..22].try_into().unwrap());
+    let height_signed = i32::from_le_bytes(data[22..26].try_into().unwrap());
+    let top_down = height_signed < 0;
+    let height = height_signed.unsigned_abs();
+    let width_u = width as u32;
+    let row_bytes = ((width_u as usize * 3) + 3) & !3;
+    let mut bm = RgbBitmap::filled(width_u, height, [255, 255, 255]).unwrap();
+    for y in 0..height {
+        let src_y = if top_down { y } else { height - 1 - y };
+        let row_start = pixel_offset + src_y as usize * row_bytes;
+        let src = &data[row_start..row_start + width_u as usize * 3];
+        let dst = bm.row_mut(y as usize);
+        for x in 0..width_u as usize {
+            let b = src[x * 3];
+            let g = src[x * 3 + 1];
+            let r = src[x * 3 + 2];
+            dst[x * 3..x * 3 + 3].copy_from_slice(&[r, g, b]);
         }
     }
     bm

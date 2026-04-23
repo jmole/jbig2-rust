@@ -49,6 +49,7 @@ pub struct Jbig2ImageDecoder<R: Read + Seek> {
     inner: Jbig2Decoder<R>,
     width: u32,
     height: u32,
+    rgb: bool,
 }
 
 impl<R: Read + Seek> Jbig2ImageDecoder<R> {
@@ -60,16 +61,31 @@ impl<R: Read + Seek> Jbig2ImageDecoder<R> {
             .any(|sh| matches!(sh.segment_type, crate::segments::SegmentType::PageInformation));
         let (w, h) = if has_page_info {
             match inner.decode_page(1) {
-                Ok(p) => (p.bitmap.width(), p.bitmap.height()),
+                Ok(p) => {
+                    if let Some(rgb) = &p.rgb_bitmap {
+                        (rgb.width(), rgb.height())
+                    } else {
+                        (p.bitmap.width(), p.bitmap.height())
+                    }
+                }
                 Err(_) => (0, 0),
             }
         } else {
             (0, 0)
         };
+        let rgb = if has_page_info {
+            inner
+                .decode_page(1)
+                .map(|p| p.rgb_bitmap.is_some())
+                .unwrap_or(false)
+        } else {
+            false
+        };
         Ok(Self {
             inner,
             width: w,
             height: h,
+            rgb,
         })
     }
 
@@ -91,7 +107,11 @@ impl<R: Read + Seek> ImageDecoder for Jbig2ImageDecoder<R> {
     }
 
     fn color_type(&self) -> ColorType {
-        ColorType::L8
+        if self.rgb {
+            ColorType::Rgb8
+        } else {
+            ColorType::L8
+        }
     }
 
     fn read_image(mut self, buf: &mut [u8]) -> ImageResult<()>
@@ -99,18 +119,23 @@ impl<R: Read + Seek> ImageDecoder for Jbig2ImageDecoder<R> {
         Self: Sized,
     {
         let page = self.inner.decode_page(1).map_err(jbig2_to_image)?;
-        let bm = page.bitmap;
-        assert_eq!(buf.len(), (bm.width() as usize) * (bm.height() as usize));
-        // Expand 1-bpp → 8-bpp. JBIG2 `1` = ink (black); image's L8 treats
-        // `0` as black and `255` as white, so we map
-        //   jbig2 0 (white/paper) → 255
-        //   jbig2 1 (black/ink)   → 0
-        let width = bm.width() as usize;
-        for y in 0..bm.height() as usize {
-            let row = bm.row(y);
-            for x in 0..width {
-                let bit = (row[x >> 3] >> (7 - (x & 7))) & 1;
-                buf[y * width + x] = if bit == 0 { 255 } else { 0 };
+        if let Some(rgb) = page.rgb_bitmap {
+            assert_eq!(buf.len(), rgb.data().len());
+            buf.copy_from_slice(rgb.data());
+        } else {
+            let bm = page.bitmap;
+            assert_eq!(buf.len(), (bm.width() as usize) * (bm.height() as usize));
+            // Expand 1-bpp → 8-bpp. JBIG2 `1` = ink (black); image's L8 treats
+            // `0` as black and `255` as white, so we map
+            //   jbig2 0 (white/paper) → 255
+            //   jbig2 1 (black/ink)   → 0
+            let width = bm.width() as usize;
+            for y in 0..bm.height() as usize {
+                let row = bm.row(y);
+                for x in 0..width {
+                    let bit = (row[x >> 3] >> (7 - (x & 7))) & 1;
+                    buf[y * width + x] = if bit == 0 { 255 } else { 0 };
+                }
             }
         }
         Ok(())
@@ -123,8 +148,14 @@ impl<R: Read + Seek> ImageDecoder for Jbig2ImageDecoder<R> {
 
 /// Convenience: decode every page in a JBIG2 byte buffer into a vector of
 /// `image::GrayImage`s.
+///
+/// The JBIG2 decoder only needs `Read + Seek`, which `Cursor<&[u8]>` already
+/// provides, so we avoid copying the input buffer. The 1-bpp → 8-bpp expansion
+/// is done row-at-a-time against the packed backing buffer rather than through
+/// the per-pixel `get_pixel()` accessor; on a typical page this saves a
+/// per-pixel `self.width * self.height` call sequence plus bounds checks.
 pub fn decode_all_pages_gray(bytes: &[u8]) -> crate::Jbig2Result<Vec<image::GrayImage>> {
-    let mut inner = Jbig2Decoder::new(Cursor::new(bytes.to_vec()))?;
+    let mut inner = Jbig2Decoder::new(Cursor::new(bytes))?;
     let n = inner.num_pages();
     let mut out = Vec::with_capacity(n as usize);
     for p in 1..=n {
@@ -132,13 +163,18 @@ pub fn decode_all_pages_gray(bytes: &[u8]) -> crate::Jbig2Result<Vec<image::Gray
         let bm = page.bitmap;
         let width = bm.width();
         let height = bm.height();
-        let mut img = image::GrayImage::new(width, height);
-        for y in 0..height {
-            for x in 0..width {
-                let bit = bm.get_pixel(x as i32, y as i32);
-                img.put_pixel(x, y, image::Luma([if bit == 0 { 255 } else { 0 }]));
+        let width_us = width as usize;
+        let mut buf = vec![0u8; width_us * height as usize];
+        for y in 0..height as usize {
+            let row = bm.row(y);
+            let dst = &mut buf[y * width_us..(y + 1) * width_us];
+            for x in 0..width_us {
+                let bit = (row[x >> 3] >> (7 - (x & 7))) & 1;
+                dst[x] = if bit == 0 { 255 } else { 0 };
             }
         }
+        let img = image::GrayImage::from_raw(width, height, buf)
+            .expect("buffer sized width*height by construction");
         out.push(img);
     }
     Ok(out)

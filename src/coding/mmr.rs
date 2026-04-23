@@ -11,9 +11,17 @@
 //! For JBIG2 we only exercise T.6 in practice, but the other two modes are
 //! implemented for completeness and test coverage.
 //!
-//! This is a straightforward LUT-free port of the reference `decsub.cpp` /
-//! `codsub.cpp`. It is correctness-first; the LUT-accelerated path is queued
-//! for the M7 perf pass.
+//! This module is the correctness-first bit-at-a-time port of the reference
+//! `decsub.cpp` / `codsub.cpp`. The production decode path for T.6 is the
+//! LUT-driven, packed-row implementation in [`crate::coding::mmr_lut`]; the
+//! routines here are retained as (a) the reference against which the fast
+//! decoder is cross-checked line-by-line (see `tests/mmr_diag.rs` and the
+//! unit tests in `mmr_lut`), and (b) the bool-oriented MMR encoder, whose
+//! runs are small enough that the extra `Vec<bool>` intermediate has not
+//! shown up as a hot spot in the `encode/generic/arith` benchmark. If
+//! future measurements surface encode-side T.6 as a bottleneck, the
+//! encoder here is the place to add a packed-row fast path mirroring the
+//! decoder.
 
 use crate::error::{Jbig2Error, Jbig2Result};
 
@@ -262,8 +270,10 @@ fn decode_run(r: &mut BitReader<'_>, white: bool) -> Jbig2Result<u32> {
 }
 
 fn decode_code(r: &mut BitReader<'_>, white: bool) -> Jbig2Result<(bool, u32)> {
-    // Brute-force match against the tables — the fast path will be replaced
-    // with a 13-bit LUT in M7.
+    // Brute-force match against the tables. This is the reference decoder
+    // path; production decode goes through the 13-bit LUT in
+    // `crate::coding::mmr_lut`, which this function is cross-checked
+    // against line-by-line in the MMR diag harness.
     let (term, makeup): (&[(u32, u8)], &[(u32, u8)]) = if white {
         (WHITE_TERM, WHITE_MAKEUP)
     } else {
@@ -438,15 +448,28 @@ fn next_changing(line: &[bool], start: isize, color: bool) -> usize {
 }
 
 fn next_changing_ref(ref_line: &[bool], a0: isize, a0_color: bool) -> usize {
-    // b1 is the first changing element in ref_line after a0 with opposite
-    // colour to `a0_color`.
-    let mut i = if a0 < 0 { 0 } else { a0 as usize + 1 };
-    // Step 1: skip runs whose colour matches a0_color until colour changes.
-    while i < ref_line.len() && ref_line[i] == a0_color {
+    // Per T.6 definitions, b1 is the first *changing* picture element on the
+    // reference line to the right of a0 whose colour is opposite to a0's
+    // colour. "Changing" means the pixel differs from the one immediately to
+    // its left. The virtual pixel preceding position 0 is treated as white,
+    // matching the CCITT convention for the imaginary first reference line.
+    //
+    // A naive "first pixel of opposite colour" search is wrong when a0 sits
+    // inside a run of opposite-colour pixels on the reference line: that run
+    // has no transition to opposite colour within it, so we must keep
+    // scanning until we pass through a same-colour run and then back across
+    // to the opposite colour.
+    let len = ref_line.len();
+    let start = if a0 < 0 { 0 } else { a0 as usize + 1 };
+    let mut i = start;
+    while i < len {
+        let prev = if i == 0 { false } else { ref_line[i - 1] };
+        if ref_line[i] != prev && ref_line[i] != a0_color {
+            return i;
+        }
         i += 1;
     }
-    // Step 2: now at first element of opposite colour — this is b1.
-    i
+    len
 }
 
 fn fill(line: &mut [bool], start: usize, end: usize, color: bool) {

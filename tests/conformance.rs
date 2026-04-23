@@ -12,51 +12,77 @@ mod common;
 use jbig2::Jbig2Decoder;
 use std::io::Cursor;
 
-use common::{conformance_dir, load_conformance_bmp};
+use common::{conformance_dir, load_conformance_bmp, ReferenceImage};
 
-fn decode_to_bitmap(jb2: &str) -> jbig2::Bitmap {
+fn decode_page(jb2: &str) -> jbig2::DecodedPage {
     let path = conformance_dir().join(jb2);
     let data = std::fs::read(&path).unwrap_or_else(|e| panic!("read {path:?}: {e}"));
     let mut dec = Jbig2Decoder::new(Cursor::new(data)).expect("parse file header");
-    let page = dec.decode_page(1).expect("decode page 1");
-    page.bitmap
+    dec.decode_page(1).expect("decode page 1")
 }
 
 fn compare_to_reference(jb2: &str, bmp: &str) {
-    let decoded = decode_to_bitmap(jb2);
+    let decoded = decode_page(jb2);
     let expected = load_conformance_bmp(bmp);
-    assert_eq!(
-        decoded.width(),
-        expected.width(),
-        "{jb2}: width mismatch {} vs {}",
-        decoded.width(),
-        expected.width()
-    );
-    assert_eq!(
-        decoded.height(),
-        expected.height(),
-        "{jb2}: height mismatch {} vs {}",
-        decoded.height(),
-        expected.height()
-    );
-    if decoded != expected {
-        // Give a more informative message: first differing row.
-        for y in 0..decoded.height() {
-            if decoded.row(y as usize) != expected.row(y as usize) {
-                panic!("{jb2}: pixel mismatch, first differing row {y}");
+    match expected {
+        ReferenceImage::Mono(expected) => {
+            let decoded = decoded.bitmap;
+            assert_eq!(
+                decoded.width(),
+                expected.width(),
+                "{jb2}: width mismatch {} vs {}",
+                decoded.width(),
+                expected.width()
+            );
+            assert_eq!(
+                decoded.height(),
+                expected.height(),
+                "{jb2}: height mismatch {} vs {}",
+                decoded.height(),
+                expected.height()
+            );
+            if decoded != expected {
+                for y in 0..decoded.height() {
+                    if decoded.row(y as usize) != expected.row(y as usize) {
+                        panic!("{jb2}: pixel mismatch, first differing row {y}");
+                    }
+                }
+                panic!("{jb2}: bitmaps differ (height-independent)");
             }
         }
-        panic!("{jb2}: bitmaps differ (height-independent)");
+        ReferenceImage::Rgb(expected) => {
+            let decoded = decoded.rgb_bitmap.expect("decoded rgb page");
+            assert_eq!(
+                decoded.width(),
+                expected.width(),
+                "{jb2}: width mismatch {} vs {}",
+                decoded.width(),
+                expected.width()
+            );
+            assert_eq!(
+                decoded.height(),
+                expected.height(),
+                "{jb2}: height mismatch {} vs {}",
+                decoded.height(),
+                expected.height()
+            );
+            if decoded != expected {
+                for y in 0..decoded.height() {
+                    if decoded.row(y as usize) != expected.row(y as usize) {
+                        panic!("{jb2}: RGB pixel mismatch, first differing row {y}");
+                    }
+                }
+                panic!("{jb2}: RGB bitmaps differ (height-independent)");
+            }
+        }
     }
 }
 
-// TODO(m2-follow-up): investigate the T.6 MMR desync observed at line 66 of
-// F01_200_TT9.jb2. Self-decoded T.6 round-trips pass but the reference file
-// uses bit patterns my decoder does not accept for long white make-ups. The
-// arithmetic path (TT10) is fully passing, which is the critical one for
-// lossless symbol coding and patent TIFF workflows.
+// T.6 MMR generic region against the T.88 reference stream. The earlier
+// desync at line 66 was resolved once the LUT-driven decoder in
+// `crate::coding::mmr_lut` took over the hot path; see `tests/mmr_diag.rs`
+// for a slow-vs-fast line-by-line cross-check over the same codestream.
 #[test]
-#[ignore = "known T.6 MMR desync; arithmetic path (TT10) passes"]
 fn tt9_mmr_generic_region() {
     compare_to_reference("F01_200_TT9.jb2", "F01_200_TT9_TT00.bmp");
 }
@@ -66,31 +92,53 @@ fn tt10_arithmetic_generic_region() {
     compare_to_reference("F01_200_TT10.jb2", "F01_200_TT10_TT00.bmp");
 }
 
-// TODO(m3-follow-up): TT1..TT3 all use SDHUFF=1 / SBHUFF=1, i.e. the
-// Huffman-coded symbol dictionary + text region path. That path is a
-// substantial spec feature on its own (standard tables B.1..B.5 wiring,
-// collective-bitmap unpacking via MMR or generic-region arithmetic coding,
-// Huffman export-flag stream). The arithmetic symbol path — which every
-// real-world encoder, including jbig2enc -S and this crate's own
-// `Mode::SymbolLossless`, uses — is fully working and round-trip-tested
-// in src/encoder.rs. The ignored tests below track the Huffman-SD
-// follow-up.
+// TT1..TT3 cover the Huffman-coded symbol path. TT1 additionally pulls in
+// pattern-dictionary + halftone decode on page 1, while TT2 exercises the
+// Huffman SD variant in isolation and TT3 stays on the arithmetic symbol
+// path.
 #[test]
-#[ignore = "Huffman-coded symbol dictionaries (M3 follow-up)"]
 fn tt1_pattern_plus_symbols() {
     compare_to_reference("codeStreamTest1_TT1.jb2", "codeStreamTest1_TT1_TT00.bmp");
 }
 
 #[test]
-#[ignore = "Huffman-coded symbol dictionary + text region (M3 follow-up)"]
 fn tt2_huffman_symbol_region() {
     compare_to_reference("codeStreamTest1_TT2.jb2", "codeStreamTest1_TT2_TT00.bmp");
 }
 
 #[test]
-#[ignore = "Huffman-coded symbol dictionary + text region (M3 follow-up)"]
 fn tt3_huffman_symbol_region() {
     compare_to_reference("codeStreamTest1_TT3.jb2", "codeStreamTest1_TT3_TT00.bmp");
+}
+
+// TT4..TT7: arithmetic-coded symbol dictionary + text region. These exercise
+// the "export all new symbols" shortcut that the reference encoder bakes
+// into the IAEX run-length stream (Jbig2ENC.cpp:434-435 / 514-515 emits
+// `IAEX(0), IAEX(0)` regardless of SBNUMSYMS). Our decoder accepts that
+// pattern when SDNUMEXSYMS == SDNUMNEWSYMS.
+#[test]
+fn tt4_arithmetic_symbol_region() {
+    compare_to_reference("codeStreamTest1_TT4.jb2", "codeStreamTest1_TT4_TT00.bmp");
+}
+
+#[test]
+fn tt5_arithmetic_symbol_region_imports() {
+    compare_to_reference("codeStreamTest1_TT5.jb2", "codeStreamTest1_TT5_TT00.bmp");
+}
+
+#[test]
+fn tt6_arithmetic_symbol_region() {
+    compare_to_reference("codeStreamTest2_TT6.jb2", "codeStreamTest2_TT6_TT00.bmp");
+}
+
+#[test]
+fn tt7_arithmetic_symbol_region() {
+    compare_to_reference("codeStreamTest1_TT7.jb2", "codeStreamTest1_TT7_TT00.bmp");
+}
+
+#[test]
+fn tt8_colour_text_region() {
+    compare_to_reference("codeStreamTest3_TT8.jb2", "codeStreamTest3_TT8_TT00.bmp");
 }
 
 /// Validates the encoder path: take the T10 reference bitmap, encode it with
@@ -107,7 +155,10 @@ fn arithmetic_generic_round_trip_page_scale() {
     use jbig2::segments::region_info::RegionInfo;
     use jbig2::segments::{SegmentHeader, SegmentType};
 
-    let expected = load_conformance_bmp("F01_200_TT10_TT00.bmp");
+    let expected = match load_conformance_bmp("F01_200_TT10_TT00.bmp") {
+        ReferenceImage::Mono(bm) => bm,
+        ReferenceImage::Rgb(_) => panic!("expected monochrome TT10 reference"),
+    };
     let width = expected.width();
     let height = expected.height();
 
