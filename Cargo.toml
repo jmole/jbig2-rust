@@ -38,7 +38,8 @@ anyhow = { version = "1", optional = true }
 proptest = "1"
 rand = "0.8"
 rand_xoshiro = "0.6"
-criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support", "html_reports", "plotters"] }
+plotters = { version = "0.3", default-features = false, features = ["svg_backend"] }
 
 [[bin]]
 name = "jbig2"
@@ -47,6 +48,10 @@ required-features = ["cli"]
 
 [[bench]]
 name = "codec"
+harness = false
+
+[[bench]]
+name = "reference_codec"
 harness = false
 
 [profile.release]

@@ -293,12 +293,12 @@ impl MqEncoder {
         }
         self.c_reg <<= self.ct;
         self.byte_out();
-        // The B buffer now holds the last byte not yet pushed; flush it.
-        // The reference implementation in some variants pushes trailing 0x00s;
-        // for JBIG2 the termination leaves the final B in the buffer.
-        if !self.first {
-            self.out.push(self.b);
-        }
+        // Note: the final buffered B is intentionally *not* pushed; the
+        // JBIG2 reference MQ_flush (Annex E / MQ_codec.cpp) terminates with
+        // B still sitting in the register. The decoder synthesises a
+        // `0xFF00` tail for the remaining bit pump, so preserving the
+        // exact byte count from the reference encoder is important for
+        // conformance streams to land in the same MQ state at decode time.
         self.out
     }
 
@@ -331,6 +331,13 @@ impl<'a> MqDecoder<'a> {
             buf,
             pos: 0,
         };
+        // Spec E.3.5 says "B = first byte of coded data; C = B << 16" and then
+        // BYTEIN. Setting B to buf[0] means the first BYTEIN takes the FF
+        // branch whenever buf[0] is 0xFF, effectively consuming 7 bits of
+        // buf[1] instead of 8. This matches what our encoder emits (the
+        // encoder's FF_flag is set by the second MQ_ByteOut when the first
+        // buffered byte happens to be 0xFF), so the round-trip stays
+        // self-consistent.
         d.b = d.read_byte();
         d.c_reg = (d.b as u32) << 16;
         d.byte_in();
@@ -354,20 +361,37 @@ impl<'a> MqDecoder<'a> {
 
     #[inline]
     fn byte_in(&mut self) {
-        if self.b == 0xFF {
-            if self.pos < self.buf.len() && self.buf[self.pos] > 0x8F {
-                self.ct = 8;
-                // Do not consume; virtual fill-bits
+        if self.pos < self.buf.len() {
+            if self.b == 0xFF {
+                if self.buf[self.pos] > 0x8F {
+                    // Marker / terminator: the reference MQ_ByteIn advances
+                    // past the marker byte and leaves B as 0xFF while the
+                    // renormaliser keeps pulling synthetic bits. Mirror that so
+                    // `pos` is not sticky (which would trap subsequent
+                    // byte_in calls re-reading the same marker byte forever).
+                    self.pos += 1;
+                    self.ct = 8;
+                } else {
+                    let nb = self.buf[self.pos];
+                    self.pos += 1;
+                    self.b = nb;
+                    self.c_reg = self.c_reg.wrapping_add((nb as u32) << 9);
+                    self.ct = 7;
+                }
             } else {
-                let nb = self.read_byte();
+                let nb = self.buf[self.pos];
+                self.pos += 1;
                 self.b = nb;
-                self.c_reg = self.c_reg.wrapping_add((nb as u32) << 9);
-                self.ct = 7;
+                self.c_reg = self.c_reg.wrapping_add((nb as u32) << 8);
+                self.ct = 8;
             }
         } else {
-            let nb = self.read_byte();
-            self.b = nb;
-            self.c_reg = self.c_reg.wrapping_add((nb as u32) << 8);
+            // Past end of stream: match the reference MQ_ByteIn behaviour,
+            // which synthesises a 0xFF data byte (not a stuff byte) regardless
+            // of the previous B value. This keeps the renormaliser pulling in
+            // `0xFF00` units of Creg per ByteIn, exactly mirroring the spec's
+            // virtual end-of-stream semantics (E.2.4).
+            self.c_reg = self.c_reg.wrapping_add(0xFF00);
             self.ct = 8;
         }
     }
@@ -449,6 +473,14 @@ impl<'a> MqDecoder<'a> {
         self.pos
     }
 
+    /// Debug helper: returns `(a_reg, c_reg, ct, b, pos)` for external
+    /// tracing. Intended for diagnostics only; the shape of the tuple is
+    /// not part of the stable API surface.
+    #[doc(hidden)]
+    pub fn state(&self) -> (u32, u32, i32, u8, usize) {
+        (self.a_reg, self.c_reg, self.ct, self.b, self.pos)
+    }
+
     /// Check that the decoder did not run far past the end of the buffer.
     /// Intended as a post-hoc sanity check.
     pub fn check_eof(&self, tolerance: usize) -> Jbig2Result<()> {
@@ -500,6 +532,11 @@ mod tests {
         }
     }
 
+    fn stable_bits() -> Vec<u8> {
+        let mut rng = Xoshiro256PlusPlus::seed_from_u64(0x1234_5678_9ABC_DEF0);
+        (0..256).map(|_| rng.gen_range(0..2u8)).collect()
+    }
+
     #[test]
     fn round_trip_alternating_bits() {
         let v: Vec<u8> = (0..512u32).map(|i| (i & 1) as u8).collect();
@@ -531,5 +568,18 @@ mod tests {
             .map(|_| if rng.gen_range(0..100u32) < 5 { 1 } else { 0 })
             .collect();
         round_trip(&v);
+    }
+
+    #[test]
+    fn mq_termination_byte_count_is_stable() {
+        let bits = stable_bits();
+        let mut cxs = MqContexts::new(16);
+        let mut enc = MqEncoder::new(bits.len() / 8 + 4);
+        for &b in &bits {
+            let cx = (b as usize) & 0xF;
+            enc.encode(&mut cxs, cx, b);
+        }
+        let out = enc.finish();
+        assert_eq!(out, vec![85, 255, 127, 240]);
     }
 }

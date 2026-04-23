@@ -93,17 +93,31 @@ fn cmd_decode(input: PathBuf, output: PathBuf, page: u32) -> anyhow::Result<()> 
     let file = File::open(&input).with_context(|| format!("open {input:?}"))?;
     let mut dec = Jbig2Decoder::new(BufReader::new(file))?;
     let decoded = dec.decode_page(page)?;
-    let bm = decoded.bitmap;
-    let mut img = image::GrayImage::new(bm.width(), bm.height());
-    for y in 0..bm.height() {
-        for x in 0..bm.width() {
-            let bit = bm.get_pixel(x as i32, y as i32);
-            img.put_pixel(x, y, image::Luma([if bit == 0 { 255 } else { 0 }]));
+    if let Some(rgb) = decoded.rgb_bitmap {
+        let img = image::RgbImage::from_raw(rgb.width(), rgb.height(), rgb.data().to_vec())
+            .expect("rgb buffer sized width*height*3");
+        img.save(&output)
+            .with_context(|| format!("write {output:?}"))?;
+        eprintln!(
+            "decoded RGB page {} ({}×{}) to {:?}",
+            page,
+            rgb.width(),
+            rgb.height(),
+            output
+        );
+    } else {
+        let bm = decoded.bitmap;
+        let mut img = image::GrayImage::new(bm.width(), bm.height());
+        for y in 0..bm.height() {
+            for x in 0..bm.width() {
+                let bit = bm.get_pixel(x as i32, y as i32);
+                img.put_pixel(x, y, image::Luma([if bit == 0 { 255 } else { 0 }]));
+            }
         }
+        img.save(&output)
+            .with_context(|| format!("write {output:?}"))?;
+        eprintln!("decoded page {} ({}×{}) to {:?}", page, bm.width(), bm.height(), output);
     }
-    img.save(&output)
-        .with_context(|| format!("write {output:?}"))?;
-    eprintln!("decoded page {} ({}×{}) to {:?}", page, bm.width(), bm.height(), output);
     Ok(())
 }
 

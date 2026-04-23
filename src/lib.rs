@@ -9,28 +9,31 @@
 //! | Generic region ? arithmetic (6.2.5, templates 0..3) | done | done |
 //! | Generic region ? TPGD duplicate-line removal | done | done |
 //! | Generic region ? extended 12-AT template (AMD2) | done | done |
-//! | Generic region ? MMR (T.6) | partial? | done |
+//! | Generic region ? MMR (T.6) | done? | done |
 //! | Symbol dictionary (7.4.2) ? arithmetic | done | done |
-//! | Symbol dictionary ? Huffman | deferred? | deferred? |
+//! | Symbol dictionary ? Huffman | done | deferred? |
 //! | Text region (7.4.3) ? arithmetic, no refinement | done | done |
-//! | Text region ? Huffman / refinement | deferred? | deferred? |
+//! | Text region ? Huffman / refinement | done | done |
 //! | Connected-component extraction + identity classifier | ? | done |
 //! | Lossy classifier (WXOR, size-bucket accel) | ? | done |
-//! | Generic refinement (6.3, 7.4.7) | deferred? | deferred? |
-//! | Pattern dictionary + halftone (7.4.4, 7.4.5) | deferred? | deferred? |
-//! | Colour palette (AMD3) | deferred? | deferred? |
+//! | Generic refinement (6.3, 7.4.7) | done | done |
+//! | Pattern dictionary + halftone (7.4.4, 7.4.5) | done | done |
+//! | Colour palette (AMD3) | done | deferred? |
 //!
 //! Footnotes:
-//! * ? Self-encoded T.6 MMR round-trips cleanly; the T.88 TT9 reference
-//!   stream exposes an unresolved desync on long white make-ups at line 66.
-//! * ? TT1..TT3 exercise Huffman-coded SD/TR; every real-world encoder
-//!   (`jbig2enc -S` included) uses the arithmetic path which is fully
-//!   implemented and round-tripped by [`Mode::SymbolLossless`].
-//! * ? Generic refinement (6.3) + refined symbol/text regions unlock
-//!   TT4..TT7. The arithmetic building blocks are shared with the generic
-//!   region coder, so this is primarily wiring work.
-//! * ? Halftone / pattern dictionary (TT8) + AMD3 colour palette are
-//!   niche for patent-TIFF workflows; tracked for a later crate version.
+//! * ? Production T.6 MMR decode goes through the LUT-driven, packed-row
+//!   fast path in [`coding::mmr_lut`]; the bit-at-a-time reference
+//!   decoder in [`coding::mmr`] is retained for cross-validation and
+//!   exercised by a slow-vs-fast harness in `tests/mmr_diag.rs` over the
+//!   full T.88 TT9 codestream. Self-encoded round-trips and the T.88
+//!   TT9 reference both decode to the reference bitmap.
+//! * ? TT1..TT3 exercise Huffman-coded SD/TR on the decoder side. Encoding
+//!   still goes through the arithmetic path exposed by [`Mode::SymbolLossless`].
+//! * ? Generic refinement (6.3) and refined symbol/text regions are fully
+//!   wired for both decode and encode, which closes TT4..TT7.
+//! * ? Halftone / pattern dictionary plus AMD3 colour support are available
+//!   in the decoder, and the encoder now exposes direct symbol-coding and
+//!   halftone entry points. Colour encoding remains future work.
 //!
 //! # Crate layout
 //!
@@ -93,13 +96,18 @@ pub mod coding;
 pub mod decoder;
 pub mod encoder;
 pub mod error;
+pub mod rgb_bitmap;
 pub mod segments;
 pub mod symbol;
 
 pub use bitmap::Bitmap;
 pub use decoder::{DecodedPage, Jbig2Decoder};
-pub use encoder::{Coding, EncoderConfig, GenericTemplate, Jbig2Encoder, Mode};
+pub use encoder::{
+    Coding, EncoderConfig, GenericTemplate, HalftonePageOptions, Jbig2Encoder, Mode,
+    SymbolCoding,
+};
 pub use error::{Jbig2Error, Jbig2Result};
+pub use rgb_bitmap::RgbBitmap;
 
 /// JBIG2 file magic: `97 4A 42 32 0D 0A 1A 0A`.
 pub const JBIG2_MAGIC: [u8; 8] = [0x97, 0x4A, 0x42, 0x32, 0x0D, 0x0A, 0x1A, 0x0A];
