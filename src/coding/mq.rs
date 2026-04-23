@@ -159,6 +159,20 @@ impl MqContexts {
     pub fn get_mut(&mut self, cx: usize) -> &mut CxState {
         &mut self.states[cx]
     }
+
+    /// Borrow one context without a bounds check in release builds.
+    ///
+    /// # Safety
+    ///
+    /// The caller must guarantee that `cx < self.len()`. Decoder call sites
+    /// validate the context range once per segment before entering the hot MQ
+    /// loop, so repeated per-bit checks are redundant there.
+    #[inline]
+    pub(crate) unsafe fn get_unchecked_mut(&mut self, cx: usize) -> &mut CxState {
+        debug_assert!(cx < self.states.len());
+        // SAFETY: upheld by the caller; see the contract above.
+        unsafe { self.states.get_unchecked_mut(cx) }
+    }
 }
 
 /// MQ arithmetic encoder.
@@ -312,7 +326,7 @@ impl MqEncoder {
 /// current read position inside.
 pub struct MqDecoder<'a> {
     a_reg: u32,
-    c_reg: u32,
+    c_reg: u64,
     ct: i32,
     b: u8,
     buf: &'a [u8],
@@ -339,7 +353,7 @@ impl<'a> MqDecoder<'a> {
         // buffered byte happens to be 0xFF), so the round-trip stays
         // self-consistent.
         d.b = d.read_byte();
-        d.c_reg = (d.b as u32) << 16;
+        d.c_reg = (d.b as u64) << 48;
         d.byte_in();
         d.c_reg <<= 7;
         d.ct -= 7;
@@ -375,14 +389,14 @@ impl<'a> MqDecoder<'a> {
                     let nb = self.buf[self.pos];
                     self.pos += 1;
                     self.b = nb;
-                    self.c_reg = self.c_reg.wrapping_add((nb as u32) << 9);
+                    self.c_reg = self.c_reg.wrapping_add((nb as u64) << 41);
                     self.ct = 7;
                 }
             } else {
                 let nb = self.buf[self.pos];
                 self.pos += 1;
                 self.b = nb;
-                self.c_reg = self.c_reg.wrapping_add((nb as u32) << 8);
+                self.c_reg = self.c_reg.wrapping_add((nb as u64) << 40);
                 self.ct = 8;
             }
         } else {
@@ -391,77 +405,71 @@ impl<'a> MqDecoder<'a> {
             // of the previous B value. This keeps the renormaliser pulling in
             // `0xFF00` units of Creg per ByteIn, exactly mirroring the spec's
             // virtual end-of-stream semantics (E.2.4).
-            self.c_reg = self.c_reg.wrapping_add(0xFF00);
+            self.c_reg = self.c_reg.wrapping_add((0xFF00u64) << 32);
             self.ct = 8;
+        }
+    }
+
+    #[inline]
+    fn renorm(&mut self) {
+        let shift = self.a_reg.leading_zeros().saturating_sub(16);
+        if shift == 0 {
+            return;
+        }
+
+        let mut remaining = shift;
+        while remaining != 0 {
+            if self.ct == 0 {
+                self.byte_in();
+            }
+
+            let step = remaining.min(self.ct as u32);
+            self.a_reg <<= step;
+            self.c_reg <<= step;
+            self.ct -= step as i32;
+            remaining -= step;
         }
     }
 
     /// Decode one binary decision in context `cx`.
     #[inline]
     pub fn decode(&mut self, cxs: &mut MqContexts, cx: usize) -> u8 {
-        let state = cxs.get_mut(cx);
+        // SAFETY: JBIG2 segment decoders validate the context range once before
+        // entering their per-pixel MQ loops, so `cx` is in-bounds here.
+        let state = unsafe { cxs.get_unchecked_mut(cx) };
         let index = state.index() as usize;
         let mps_bit = state.mps_bit();
-        let entry = QE_TABLE[index];
+        debug_assert!(index < QE_TABLE.len());
+        // SAFETY: `CxState::index()` is a 7-bit QE-table index; valid coders
+        // only construct states from `QE_TABLE` transitions, which stay in
+        // range for all 47 entries.
+        let entry = unsafe { *QE_TABLE.get_unchecked(index) };
         let qe = entry.qe as u32;
 
-        let c_high = (self.c_reg >> 16) & 0xFFFF;
-        self.a_reg = self.a_reg.wrapping_sub(qe);
+        let c_high = ((self.c_reg >> 48) & 0xFFFF) as u32;
+        let a_after_sub = self.a_reg.wrapping_sub(qe);
+        let c_less = c_high < qe;
 
-        let d: u8;
-        if c_high < qe {
-            if self.a_reg >= qe {
-                // D1 — LPS
-                self.a_reg = qe;
-                d = mps_bit ^ 0x80;
-                let mut ns = entry.nlps;
-                if entry.switch {
-                    ns |= mps_bit ^ 0x80;
-                } else {
-                    ns |= mps_bit;
-                }
-                *state = CxState(ns);
-            } else {
-                // D5 — MPS (conditional exchange)
-                self.a_reg = qe;
-                d = mps_bit;
-                *state = CxState(entry.nmps | mps_bit);
-            }
-        } else {
-            self.c_reg = self.c_reg.wrapping_sub(qe << 16);
-            if self.a_reg & 0x8000 == 0 {
-                if self.a_reg < qe {
-                    // D2 — LPS
-                    d = mps_bit ^ 0x80;
-                    let mut ns = entry.nlps;
-                    if entry.switch {
-                        ns |= mps_bit ^ 0x80;
-                    } else {
-                        ns |= mps_bit;
-                    }
-                    *state = CxState(ns);
-                } else {
-                    // D4 — MPS
-                    d = mps_bit;
-                    *state = CxState(entry.nmps | mps_bit);
-                }
-            } else {
-                // D3 — MPS
-                d = mps_bit;
-                // State unchanged.
-            }
+        if !c_less {
+            self.c_reg = self.c_reg.wrapping_sub((qe as u64) << 48);
         }
 
-        while self.a_reg & 0x8000 == 0 {
-            if self.ct == 0 {
-                self.byte_in();
-            }
-            self.a_reg <<= 1;
-            self.c_reg <<= 1;
-            self.ct -= 1;
-        }
+        let a_less_qe = a_after_sub < qe;
+        let exchange_mask = 0u32.wrapping_sub(c_less as u32);
+        self.a_reg = (a_after_sub & !exchange_mask) | (qe & exchange_mask);
 
-        if d == 0 {
+        let lps_mask = 0u8.wrapping_sub((c_less ^ a_less_qe) as u8);
+        let lps_bit = mps_bit ^ 0x80;
+        let switched_mps = if entry.switch { lps_bit } else { mps_bit };
+        let lps_state = entry.nlps | switched_mps;
+        let mps_state = entry.nmps | mps_bit;
+        let next_state = (mps_state & !lps_mask) | (lps_state & lps_mask);
+        let state_update_mask = 0u8.wrapping_sub((c_less || lps_mask != 0 || (a_after_sub & 0x8000 == 0)) as u8);
+        state.0 = (state.0 & !state_update_mask) | (next_state & state_update_mask);
+
+        self.renorm();
+
+        if ((mps_bit & !lps_mask) | (lps_bit & lps_mask)) == 0 {
             0
         } else {
             1
@@ -478,7 +486,7 @@ impl<'a> MqDecoder<'a> {
     /// not part of the stable API surface.
     #[doc(hidden)]
     pub fn state(&self) -> (u32, u32, i32, u8, usize) {
-        (self.a_reg, self.c_reg, self.ct, self.b, self.pos)
+        (self.a_reg, (self.c_reg >> 32) as u32, self.ct, self.b, self.pos)
     }
 
     /// Check that the decoder did not run far past the end of the buffer.
