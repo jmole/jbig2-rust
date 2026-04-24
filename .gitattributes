@@ -1,3 +1,17 @@
+# Source and config: pin to LF so checkouts stay byte-identical across
+# macOS, Linux, and Windows. Without this, files committed from a Windows
+# host land in the index as CRLF and macOS/Linux working trees show every
+# line as a diff (see git ls-files --eol). Run `git add --renormalize .`
+# after touching this file to reflow the index.
+*.rs       text eol=lf
+*.toml     text eol=lf
+*.md       text eol=lf
+*.yml      text eol=lf
+*.yaml     text eol=lf
+*.json     text eol=lf
+*.sh       text eol=lf
+*.txt      text eol=lf
+
 # Frozen patent corpus:
 # treat the TIFFs as opaque binary blobs (no diff/merge, no eol normalization)
 # and pin the manifest to LF so it stays stable across platforms.

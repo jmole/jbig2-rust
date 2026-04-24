@@ -32,6 +32,9 @@ patent-samples
 !benchmark-corpus/
 !benchmark-corpus/**
 benchmark-corpus/rejected-tiffs/
+# Re-exclude macOS Finder droppings inside the corpus tree (the broad
+# `!benchmark-corpus/**` re-include above would otherwise track them).
+benchmark-corpus/**/.DS_Store
 
 # Local sandbox CARGO_HOME
 /.cargo/
