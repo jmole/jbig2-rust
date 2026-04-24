@@ -18,6 +18,8 @@
 //! for that context, `encode(1)` the LPS; the CX's MPS bit lives in the high
 //! bit of [`CxState::index`] so swapping between the two is a single XOR.
 
+use core::ptr;
+
 use crate::error::{Jbig2Error, Jbig2Result};
 
 /// Number of distinct MQ context slots used by JBIG2.
@@ -159,6 +161,18 @@ impl MqContexts {
     pub fn get_mut(&mut self, cx: usize) -> &mut CxState {
         &mut self.states[cx]
     }
+
+    /// Borrow one context without a bounds check in release builds.
+    ///
+    /// # Safety
+    ///
+    /// The caller must guarantee that `cx < self.len()`.
+    #[inline]
+    pub(crate) unsafe fn get_unchecked_mut(&mut self, cx: usize) -> &mut CxState {
+        debug_assert!(cx < self.states.len());
+        // SAFETY: upheld by the caller; see contract above.
+        unsafe { self.states.get_unchecked_mut(cx) }
+    }
 }
 
 /// MQ arithmetic encoder.
@@ -172,6 +186,7 @@ pub struct MqEncoder {
     b: u8,
     first: bool,
     out: Vec<u8>,
+    write_pos: usize,
 }
 
 impl MqEncoder {
@@ -186,59 +201,96 @@ impl MqEncoder {
             b: 0,
             first: true,
             out: Vec::with_capacity(capacity_hint),
+            write_pos: 0,
         }
     }
 
     /// Encode one binary decision in context `cx`.
     #[inline]
     pub fn encode(&mut self, cxs: &mut MqContexts, cx: usize, d: u8) {
-        let state = cxs.get_mut(cx);
+        // SAFETY: Segment encoders validate the context range before entering
+        // their per-bit MQ loops, so repeated bounds checks are redundant here.
+        let state = unsafe { cxs.get_unchecked_mut(cx) };
         let index = state.index() as usize;
         let mps_bit = state.mps_bit();
-        let entry = QE_TABLE[index];
+        let lps_bit = mps_bit ^ 0x80;
+        debug_assert!(index < QE_TABLE.len());
+        // SAFETY: `CxState::index()` is a 7-bit QE-table index. All states come
+        // from `QE_TABLE` transitions, which stay in-range for all 47 entries.
+        let entry = unsafe { *QE_TABLE.get_unchecked(index) };
         let qe = entry.qe as u32;
+        let lps_state = if entry.switch {
+            CxState(entry.nlps | lps_bit)
+        } else {
+            CxState(entry.nlps | mps_bit)
+        };
+        let mps_state = CxState(entry.nmps | mps_bit);
+        let is_lps = (((d & 1) << 7) ^ mps_bit) != 0;
 
         self.a_reg = self.a_reg.wrapping_sub(qe);
-        let d_shifted = (d & 1) << 7; // 0 or 0x80, same basis as mps_bit
-
-        if d_shifted ^ mps_bit != 0 {
-            // LPS path
-            if self.a_reg < qe {
-                self.c_reg = self.c_reg.wrapping_add(qe);
-            } else {
-                self.a_reg = qe;
-            }
-            let mut new_state = entry.nlps;
-            if !entry.switch {
-                new_state |= mps_bit;
-            } else {
-                new_state |= mps_bit ^ 0x80;
-            }
-            *state = CxState(new_state);
+        let swap = self.a_reg < qe;
+        if is_lps == swap {
+            self.c_reg = self.c_reg.wrapping_add(qe);
         } else {
-            // MPS path
-            if self.a_reg < qe {
-                self.a_reg = qe;
-                *state = CxState(entry.nmps | mps_bit);
-            } else {
-                self.c_reg = self.c_reg.wrapping_add(qe);
-                if self.a_reg & 0x8000 == 0 {
-                    *state = CxState(entry.nmps | mps_bit);
-                }
-            }
+            self.a_reg = qe;
         }
 
-        // Renormalise
-        while self.a_reg & 0x8000 == 0 {
-            self.a_reg <<= 1;
-            self.c_reg <<= 1;
-            self.ct -= 1;
+        if is_lps {
+            *state = lps_state;
+        } else if swap || (self.a_reg & 0x8000 == 0) {
+            *state = mps_state;
+        }
+
+        self.renorm();
+    }
+
+    #[inline]
+    fn renorm(&mut self) {
+        let shift = self.a_reg.leading_zeros().saturating_sub(16);
+        if shift == 0 {
+            return;
+        }
+
+        let mut remaining = shift;
+        while remaining != 0 {
+            if self.ct == 0 {
+                self.byte_out();
+            }
+
+            let step = remaining.min(self.ct as u32);
+            self.a_reg <<= step;
+            self.c_reg <<= step;
+            self.ct -= step as i32;
+            remaining -= step;
+
             if self.ct == 0 {
                 self.byte_out();
             }
         }
     }
 
+    #[inline]
+    fn push_byte(&mut self, byte: u8) {
+        if self.write_pos == self.out.capacity() {
+            self.grow_out();
+        }
+
+        // SAFETY: `grow_out` ensures spare capacity for `write_pos`, and we
+        // immediately extend the logical length to cover the initialized byte.
+        unsafe {
+            ptr::write(self.out.as_mut_ptr().add(self.write_pos), byte);
+            self.write_pos += 1;
+            self.out.set_len(self.write_pos);
+        }
+    }
+
+    #[cold]
+    fn grow_out(&mut self) {
+        let additional = self.out.capacity().max(64);
+        self.out.reserve(additional);
+    }
+
+    #[cold]
     #[inline]
     fn byte_out(&mut self) {
         if self.first {
@@ -258,7 +310,7 @@ impl MqEncoder {
                 ff_flag = true;
             }
         }
-        self.out.push(self.b);
+        self.push_byte(self.b);
         if ff_flag {
             self.b = (self.c_reg >> 20) as u8;
             self.c_reg &= 0x000F_FFFF;
@@ -270,6 +322,7 @@ impl MqEncoder {
         }
     }
 
+    #[cold]
     fn set_bits(&mut self) {
         let t = self.c_reg.wrapping_add(self.a_reg);
         self.c_reg |= 0xFFFF;
@@ -299,12 +352,13 @@ impl MqEncoder {
         // `0xFF00` tail for the remaining bit pump, so preserving the
         // exact byte count from the reference encoder is important for
         // conformance streams to land in the same MQ state at decode time.
+        self.out.truncate(self.write_pos);
         self.out
     }
 
     /// Bytes emitted so far (not counting the buffered `b`).
     pub fn bytes_written(&self) -> usize {
-        self.out.len()
+        self.write_pos
     }
 }
 
@@ -537,6 +591,32 @@ mod tests {
         (0..256).map(|_| rng.gen_range(0..2u8)).collect()
     }
 
+    fn random_decisions(seed: u64, len: usize, contexts: usize) -> Vec<(usize, u8)> {
+        let mut rng = Xoshiro256PlusPlus::seed_from_u64(seed);
+        (0..len)
+            .map(|_| (rng.gen_range(0..contexts), rng.gen_range(0..2u8)))
+            .collect()
+    }
+
+    fn encode_decisions(decisions: &[(usize, u8)], capacity_hint: usize) -> Vec<u8> {
+        let mut enc_cx = MqContexts::new(16);
+        let mut enc = MqEncoder::new(capacity_hint);
+        for &(cx, bit) in decisions {
+            enc.encode(&mut enc_cx, cx, bit);
+        }
+        enc.finish()
+    }
+
+    fn round_trip_decisions(decisions: &[(usize, u8)], capacity_hint: usize) {
+        let out = encode_decisions(decisions, capacity_hint);
+        let mut dec_cx = MqContexts::new(16);
+        let mut dec = MqDecoder::new(&out);
+        for (i, &(cx, bit)) in decisions.iter().enumerate() {
+            let d = dec.decode(&mut dec_cx, cx);
+            assert_eq!(d, bit, "mismatch at decision {i}");
+        }
+    }
+
     #[test]
     fn round_trip_alternating_bits() {
         let v: Vec<u8> = (0..512u32).map(|i| (i & 1) as u8).collect();
@@ -581,5 +661,11 @@ mod tests {
         }
         let out = enc.finish();
         assert_eq!(out, vec![85, 255, 127, 240]);
+    }
+
+    #[test]
+    fn round_trip_random_context_mix() {
+        let decisions = random_decisions(0xA11C_E55E, 12_345, 16);
+        round_trip_decisions(&decisions, 0);
     }
 }
