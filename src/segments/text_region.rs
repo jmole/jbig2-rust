@@ -256,10 +256,7 @@ fn build_canonical_codes(lengths: &[u8]) -> Jbig2Result<Vec<CanonicalCode>> {
     Ok(out)
 }
 
-fn decode_canonical_symbol(
-    r: &mut HuffReader<'_>,
-    codes: &[CanonicalCode],
-) -> Jbig2Result<usize> {
+fn decode_canonical_symbol(r: &mut HuffReader<'_>, codes: &[CanonicalCode]) -> Jbig2Result<usize> {
     let mut bits = 0u64;
     for len in 1..=64 {
         bits = (bits << 1) | r.read_bit()? as u64;
@@ -345,12 +342,9 @@ fn decode_text_region_symbol_id_table(
     let mut run_counts = [0u64; 35];
     for (sym_idx, slot) in by_symbol.iter_mut().enumerate() {
         let run_idx = decode_canonical_symbol(r, &run_codes)?;
-        let run = run_codes
-            .iter()
-            .find(|code| code.symbol == run_idx)
-            .ok_or(Jbig2Error::InvalidHuffman(
-                "text region: decoded run code missing canonical entry",
-            ))?;
+        let run = run_codes.iter().find(|code| code.symbol == run_idx).ok_or(
+            Jbig2Error::InvalidHuffman("text region: decoded run code missing canonical entry"),
+        )?;
         let code = (run.code << run_idx) | run_counts[run_idx];
         let len = run.len.saturating_add(run_idx as u8);
         run_counts[run_idx] += 1;
@@ -434,7 +428,9 @@ fn decode_text_region_huffman(
 
             let id = decode_canonical_symbol(&mut r, &symbol_codes)?;
             if id >= sbsyms.len() {
-                return Err(Jbig2Error::OutOfRange("text region: symbol ID out of range"));
+                return Err(Jbig2Error::OutOfRange(
+                    "text region: symbol ID out of range",
+                ));
             }
             let ib = sbsyms[id];
             composite_instance(
@@ -501,7 +497,12 @@ pub struct RefinedInstance {
 impl SymbolInstance {
     /// Construct an unrefined instance (the common case).
     pub fn placement(id: u32, x: i32, y: i32) -> Self {
-        Self { id, x, y, refinement: None }
+        Self {
+            id,
+            x,
+            y,
+            refinement: None,
+        }
     }
 }
 
@@ -650,26 +651,25 @@ where
 
     let code_len = sym_code_len(sbsyms.len() as u32);
     let sb_strips = 1u32 << header.log_sbstrips;
-    let s0 = decode_integer(dec, cxs, IADT).ok_or(
-        Jbig2Error::InvalidHuffman("text region: IADT initial returned OOB"),
-    )?;
+    let s0 = decode_integer(dec, cxs, IADT).ok_or(Jbig2Error::InvalidHuffman(
+        "text region: IADT initial returned OOB",
+    ))?;
     let mut strip_t: i64 = -(s0 as i64) * sb_strips as i64;
     let mut first_s: i64 = 0;
     let mut ninst: u32 = 0;
 
     while ninst < header.num_instances {
-        let dt = decode_integer(dec, cxs, IADT).ok_or(
-            Jbig2Error::InvalidHuffman("text region: strip IADT returned OOB"),
-        )?;
+        let dt = decode_integer(dec, cxs, IADT).ok_or(Jbig2Error::InvalidHuffman(
+            "text region: strip IADT returned OOB",
+        ))?;
         strip_t = strip_t.saturating_add((dt as i64).saturating_mul(sb_strips as i64));
 
         let mut cur_s = 0i64;
         let mut first = true;
         loop {
             if first {
-                let dfs = decode_integer(dec, cxs, IAFS).ok_or(
-                    Jbig2Error::InvalidHuffman("text region: IAFS returned OOB"),
-                )?;
+                let dfs = decode_integer(dec, cxs, IAFS)
+                    .ok_or(Jbig2Error::InvalidHuffman("text region: IAFS returned OOB"))?;
                 first_s = first_s.saturating_add(dfs as i64);
                 cur_s = first_s;
                 first = false;
@@ -685,9 +685,9 @@ where
                 0
             } else {
                 let current_t = if sb_strips != 1 {
-                    decode_integer(dec, cxs, IAIT).ok_or(Jbig2Error::InvalidHuffman(
-                        "text region: IAIT returned OOB",
-                    ))? as i64
+                    decode_integer(dec, cxs, IAIT)
+                        .ok_or(Jbig2Error::InvalidHuffman("text region: IAIT returned OOB"))?
+                        as i64
                 } else {
                     0
                 };
@@ -696,13 +696,14 @@ where
 
             let id = decode_iaid(dec, cxs, IAID, code_len);
             if (id as usize) >= sbsyms.len() {
-                return Err(Jbig2Error::OutOfRange("text region: symbol ID out of range"));
+                return Err(Jbig2Error::OutOfRange(
+                    "text region: symbol ID out of range",
+                ));
             }
 
             let r_flag = if header.sbrefine {
-                decode_integer(dec, cxs, IARI).ok_or(Jbig2Error::InvalidHuffman(
-                    "text region: IARI returned OOB",
-                ))?
+                decode_integer(dec, cxs, IARI)
+                    .ok_or(Jbig2Error::InvalidHuffman("text region: IARI returned OOB"))?
             } else {
                 0
             };
@@ -711,18 +712,18 @@ where
             let ib: &Bitmap = if r_flag == 0 {
                 sbsyms[id as usize]
             } else {
-                let rdw = decode_integer(dec, cxs, IARDW).ok_or(
-                    Jbig2Error::InvalidHuffman("text region: IARDW returned OOB"),
-                )?;
-                let rdh = decode_integer(dec, cxs, IARDH).ok_or(
-                    Jbig2Error::InvalidHuffman("text region: IARDH returned OOB"),
-                )?;
-                let rdx = decode_integer(dec, cxs, IARDX).ok_or(
-                    Jbig2Error::InvalidHuffman("text region: IARDX returned OOB"),
-                )?;
-                let rdy = decode_integer(dec, cxs, IARDY).ok_or(
-                    Jbig2Error::InvalidHuffman("text region: IARDY returned OOB"),
-                )?;
+                let rdw = decode_integer(dec, cxs, IARDW).ok_or(Jbig2Error::InvalidHuffman(
+                    "text region: IARDW returned OOB",
+                ))?;
+                let rdh = decode_integer(dec, cxs, IARDH).ok_or(Jbig2Error::InvalidHuffman(
+                    "text region: IARDH returned OOB",
+                ))?;
+                let rdx = decode_integer(dec, cxs, IARDX).ok_or(Jbig2Error::InvalidHuffman(
+                    "text region: IARDX returned OOB",
+                ))?;
+                let rdy = decode_integer(dec, cxs, IARDY).ok_or(Jbig2Error::InvalidHuffman(
+                    "text region: IARDY returned OOB",
+                ))?;
                 let ref_bm = sbsyms[id as usize];
                 let ib_w = ref_bm.width() as i32 + rdw;
                 let ib_h = ref_bm.height() as i32 + rdh;
@@ -748,7 +749,8 @@ where
                 &ib_owned
             };
 
-            let (x0, y0) = instance_origin(ib, &mut cur_s, t_abs, header.transposed, header.ref_corner);
+            let (x0, y0) =
+                instance_origin(ib, &mut cur_s, t_abs, header.transposed, header.ref_corner);
             emit(ib, x0, y0, ninst)?;
             ninst += 1;
             if ninst >= header.num_instances {

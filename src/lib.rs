@@ -95,8 +95,7 @@ pub mod symbol;
 pub use bitmap::Bitmap;
 pub use decoder::{DecodedPage, Jbig2Decoder};
 pub use encoder::{
-    Coding, EncoderConfig, GenericTemplate, HalftonePageOptions, Jbig2Encoder, Mode,
-    SymbolCoding,
+    Coding, EncoderConfig, GenericTemplate, HalftonePageOptions, Jbig2Encoder, Mode, SymbolCoding,
 };
 pub use error::{Jbig2Error, Jbig2Result};
 pub use rgb_bitmap::RgbBitmap;

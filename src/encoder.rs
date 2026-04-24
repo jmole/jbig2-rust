@@ -328,11 +328,7 @@ impl<W: Write> Jbig2Encoder<W> {
     }
 
     /// Encode one page through the symbol-dictionary + text-region path.
-    pub fn write_page_symbols(
-        &mut self,
-        bitmap: &Bitmap,
-        coding: SymbolCoding,
-    ) -> Jbig2Result<()> {
+    pub fn write_page_symbols(&mut self, bitmap: &Bitmap, coding: SymbolCoding) -> Jbig2Result<()> {
         self.validate_non_generic_template("symbol")?;
         let (symbol_threshold, may_contain_refinements, is_lossless) = match coding {
             SymbolCoding::Lossless => (1.0, false, true),
@@ -392,8 +388,9 @@ impl<W: Write> Jbig2Encoder<W> {
         let pd_hdr = PatternDictionaryHeader {
             hdmmr: matches!(self.cfg.coding, Coding::Mmr),
             hd_template: halftone_template,
-            hdpw: u8::try_from(pattern_w)
-                .map_err(|_| Jbig2Error::InvalidConfig("halftone page: pattern width exceeds u8"))?,
+            hdpw: u8::try_from(pattern_w).map_err(|_| {
+                Jbig2Error::InvalidConfig("halftone page: pattern width exceeds u8")
+            })?,
             hdph: u8::try_from(pattern_h).map_err(|_| {
                 Jbig2Error::InvalidConfig("halftone page: pattern height exceeds u8")
             })?,
@@ -436,8 +433,12 @@ impl<W: Write> Jbig2Encoder<W> {
             hrx: opts.step_x,
             hry: opts.step_y,
         };
-        let ht_body =
-            encode_halftone_region_with_contexts(&ht_hdr, gray_values, patterns.len(), &mut self.mq_cxs)?;
+        let ht_body = encode_halftone_region_with_contexts(
+            &ht_hdr,
+            gray_values,
+            patterns.len(),
+            &mut self.mq_cxs,
+        )?;
         let mut ht_hdr_bytes = Vec::new();
         ht_hdr.write(&mut ht_hdr_bytes)?;
         self.emit_segment(
@@ -562,7 +563,8 @@ impl<W: Write> Jbig2Encoder<W> {
             sorted_syms.len() as u32,
             sorted_syms.len() as u32,
         );
-        let sd_body = encode_symbol_dictionary_with_contexts(&sd_hdr, &sorted_syms, 0, &mut self.mq_cxs)?;
+        let sd_body =
+            encode_symbol_dictionary_with_contexts(&sd_hdr, &sorted_syms, 0, &mut self.mq_cxs)?;
 
         let sd_seg_no = self.seg_no;
         let mut sd_hdr_bytes = Vec::new();
@@ -654,8 +656,12 @@ impl<W: Write> Jbig2Encoder<W> {
                 rat: [(0, 0); 2],
                 num_instances: region_instances.len() as u32,
             };
-            let tr_body =
-                encode_text_region_with_contexts(&tr_hdr, region_instances, &sorted_syms, &mut this.mq_cxs)?;
+            let tr_body = encode_text_region_with_contexts(
+                &tr_hdr,
+                region_instances,
+                &sorted_syms,
+                &mut this.mq_cxs,
+            )?;
             let mut tr_hdr_bytes = Vec::new();
             tr_hdr.write(&mut tr_hdr_bytes)?;
             this.emit_segment(
@@ -690,7 +696,12 @@ impl<W: Write> Jbig2Encoder<W> {
                     };
                     region_height = region_height.max(ins.y.max(0) as u32 + h);
                 }
-                emit_text_region(self, baseline_y as u32, region_height.max(1), &local_instances)?;
+                emit_text_region(
+                    self,
+                    baseline_y as u32,
+                    region_height.max(1),
+                    &local_instances,
+                )?;
                 start = end;
             }
         } else {
@@ -750,9 +761,7 @@ impl<W: Write> Jbig2Encoder<W> {
         };
         self.seg_no += 1;
         seg_hdr.write(&mut self.writer)?;
-        self.writer
-            .write_all(&body_buf)
-            .map_err(Jbig2Error::from)?;
+        self.writer.write_all(&body_buf).map_err(Jbig2Error::from)?;
         Ok(())
     }
 
@@ -855,7 +864,10 @@ mod tests {
                 break;
             }
         }
-        assert!(saw_refined_text, "max_compression should emit SBREFINE=1 when lossy matches need recovery");
+        assert!(
+            saw_refined_text,
+            "max_compression should emit SBREFINE=1 when lossy matches need recovery"
+        );
 
         let page = dec.decode_page(1).unwrap();
         assert_eq!(page.bitmap, bm);
@@ -867,9 +879,28 @@ mod tests {
         let mut bm = Bitmap::new(200, 40).unwrap();
         // Three distinct glyph shapes.
         let shapes: [&[(i32, i32)]; 3] = [
-            &[(0, 0), (0, 1), (1, 0), (1, 1), (2, 0), (2, 1), (0, 2), (1, 2), (2, 2)],
+            &[
+                (0, 0),
+                (0, 1),
+                (1, 0),
+                (1, 1),
+                (2, 0),
+                (2, 1),
+                (0, 2),
+                (1, 2),
+                (2, 2),
+            ],
             &[(0, 0), (1, 0), (2, 0), (1, 1), (1, 2), (1, 3)],
-            &[(0, 0), (0, 1), (0, 2), (1, 0), (1, 2), (2, 0), (2, 1), (2, 2)],
+            &[
+                (0, 0),
+                (0, 1),
+                (0, 2),
+                (1, 0),
+                (1, 2),
+                (2, 0),
+                (2, 1),
+                (2, 2),
+            ],
         ];
         // Lay the three shapes out ten times with 15-pixel spacing, two rows.
         for row in 0..2 {
@@ -896,8 +927,16 @@ mod tests {
         // Two near-identical 3x3 glyph variants. `glyph_b` differs by one
         // extra center pixel only, so the WXOR disagreement is 1/8 = 0.125
         // and the `0.85` preset threshold will merge them.
-        let glyph_a: &[(i32, i32)] =
-            &[(0, 0), (1, 0), (2, 0), (0, 1), (2, 1), (0, 2), (1, 2), (2, 2)];
+        let glyph_a: &[(i32, i32)] = &[
+            (0, 0),
+            (1, 0),
+            (2, 0),
+            (0, 1),
+            (2, 1),
+            (0, 2),
+            (1, 2),
+            (2, 2),
+        ];
         let glyph_b: &[(i32, i32)] = &[
             (0, 0),
             (1, 0),
@@ -955,10 +994,7 @@ mod tests {
             }
         }
         assert_eq!(num_sd, 1, "expected one symbol dictionary segment");
-        assert!(
-            num_tr >= 1,
-            "expected at least one text region segment"
-        );
+        assert!(num_tr >= 1, "expected at least one text region segment");
 
         let page = dec.decode_page(1).unwrap();
         assert_eq!(

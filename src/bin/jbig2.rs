@@ -78,7 +78,11 @@ impl Preset {
 fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
-        Cmd::Decode { input, output, page } => cmd_decode(input, output, page),
+        Cmd::Decode {
+            input,
+            output,
+            page,
+        } => cmd_decode(input, output, page),
         Cmd::Info { input } => cmd_info(input),
         Cmd::Encode {
             input,
@@ -116,7 +120,13 @@ fn cmd_decode(input: PathBuf, output: PathBuf, page: u32) -> anyhow::Result<()> 
         }
         img.save(&output)
             .with_context(|| format!("write {output:?}"))?;
-        eprintln!("decoded page {} ({}×{}) to {:?}", page, bm.width(), bm.height(), output);
+        eprintln!(
+            "decoded page {} ({}×{}) to {:?}",
+            page,
+            bm.width(),
+            bm.height(),
+            output
+        );
     }
     Ok(())
 }

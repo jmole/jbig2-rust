@@ -148,9 +148,7 @@ fn tt8_colour_text_region() {
 fn arithmetic_generic_round_trip_page_scale() {
     use jbig2::coding::mq::{MqContexts, MqEncoder, MQ_NUM_CONTEXTS};
     use jbig2::segments::file_header::FileHeader;
-    use jbig2::segments::generic_region::{
-        encode_generic_arith, nominal_at, GenericRegionHeader,
-    };
+    use jbig2::segments::generic_region::{encode_generic_arith, nominal_at, GenericRegionHeader};
     use jbig2::segments::page_information::{CombinationOp, PageInformation};
     use jbig2::segments::region_info::RegionInfo;
     use jbig2::segments::{SegmentHeader, SegmentType};
@@ -249,8 +247,7 @@ fn arithmetic_generic_round_trip_page_scale() {
     .unwrap();
 
     let compressed_size = out.len();
-    let uncompressed_size =
-        (width as usize + 7) / 8 * height as usize;
+    let uncompressed_size = (width as usize + 7) / 8 * height as usize;
     eprintln!(
         "page {}x{}: encoded={} bytes, raw={} bytes, ratio={:.2}",
         width,
@@ -262,5 +259,8 @@ fn arithmetic_generic_round_trip_page_scale() {
 
     let mut dec = Jbig2Decoder::new(Cursor::new(out)).unwrap();
     let page = dec.decode_page(1).unwrap();
-    assert_eq!(page.bitmap, expected, "encoder round-trip produced mismatched bitmap");
+    assert_eq!(
+        page.bitmap, expected,
+        "encoder round-trip produced mismatched bitmap"
+    );
 }

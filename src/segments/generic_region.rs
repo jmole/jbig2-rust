@@ -76,10 +76,10 @@
 use std::io::{Read, Write};
 
 use crate::bitmap::{self, Bitmap};
-use crate::coding::mmr::{BitWriter as MmrBitWriter, encode_t6_line, row_to_bools};
+use crate::coding::mmr::{encode_t6_line, row_to_bools, BitWriter as MmrBitWriter};
 use crate::coding::mq::{MqContexts, MqDecoder, MqEncoder, MQ_NUM_CONTEXTS};
 use crate::error::{Jbig2Error, Jbig2Result};
-use crate::segments::{AtPixels, region_info::RegionInfo};
+use crate::segments::{region_info::RegionInfo, AtPixels};
 
 /// Header for a generic region segment (region info + flags + AT pixels).
 #[derive(Clone, Debug)]
@@ -120,7 +120,11 @@ impl GenericRegionHeader {
         let n_at = if mmr {
             0
         } else if template == 0 {
-            if ext_template { 12 } else { 4 }
+            if ext_template {
+                12
+            } else {
+                4
+            }
         } else {
             1
         };
@@ -153,7 +157,11 @@ impl GenericRegionHeader {
         w.write_all(&[flags]).map_err(Jbig2Error::from)?;
         if !self.mmr {
             let n_at = if self.template == 0 {
-                if self.ext_template { 12 } else { 4 }
+                if self.ext_template {
+                    12
+                } else {
+                    4
+                }
             } else {
                 1
             };
@@ -449,10 +457,22 @@ fn build_ctx_from_rows<const T: u8, const EXT: bool>(
             let a2 = at_bit(p1, p2, cur, x, at[1].0, at[1].1, w);
             let a3 = at_bit(p1, p2, cur, x, at[2].0, at[2].1, w);
             let a4 = at_bit(p1, p2, cur, x, at[3].0, at[3].1, w);
-            (a4 << 15) | (a3 << 14) | (a2 << 13) | (a1 << 12)
-                | (b11 << 11) | (b10 << 10) | (b9 << 9) | (b8 << 8)
-                | (b7 << 7) | (b6 << 6) | (b5 << 5) | (b4 << 4)
-                | (b3 << 3) | (b2 << 2) | (b1 << 1) | b0
+            (a4 << 15)
+                | (a3 << 14)
+                | (a2 << 13)
+                | (a1 << 12)
+                | (b11 << 11)
+                | (b10 << 10)
+                | (b9 << 9)
+                | (b8 << 8)
+                | (b7 << 7)
+                | (b6 << 6)
+                | (b5 << 5)
+                | (b4 << 4)
+                | (b3 << 3)
+                | (b2 << 2)
+                | (b1 << 1)
+                | b0
         }
         (0, true) => {
             // Spec 6.2.5.4 / Figure 3(b) (verified against the
@@ -490,9 +510,18 @@ fn build_ctx_from_rows<const T: u8, const EXT: bool>(
             let b0 = bitmap::read_bit(cur, x - 1, w);
             let a1 = at_bit(p1, p2, cur, x, at[0].0, at[0].1, w);
             (a1 << 12)
-                | (b11 << 11) | (b10 << 10) | (b9 << 9) | (b8 << 8)
-                | (b7 << 7) | (b6 << 6) | (b5 << 5) | (b4 << 4)
-                | (b3 << 3) | (b2 << 2) | (b1 << 1) | b0
+                | (b11 << 11)
+                | (b10 << 10)
+                | (b9 << 9)
+                | (b8 << 8)
+                | (b7 << 7)
+                | (b6 << 6)
+                | (b5 << 5)
+                | (b4 << 4)
+                | (b3 << 3)
+                | (b2 << 2)
+                | (b1 << 1)
+                | b0
         }
         (2, _) => {
             let b8 = bitmap::read_bit(p2, x - 1, w);
@@ -506,8 +535,15 @@ fn build_ctx_from_rows<const T: u8, const EXT: bool>(
             let b0 = bitmap::read_bit(cur, x - 1, w);
             let a1 = at_bit(p1, p2, cur, x, at[0].0, at[0].1, w);
             (a1 << 9)
-                | (b8 << 8) | (b7 << 7) | (b6 << 6) | (b5 << 5)
-                | (b4 << 4) | (b3 << 3) | (b2 << 2) | (b1 << 1) | b0
+                | (b8 << 8)
+                | (b7 << 7)
+                | (b6 << 6)
+                | (b5 << 5)
+                | (b4 << 4)
+                | (b3 << 3)
+                | (b2 << 2)
+                | (b1 << 1)
+                | b0
         }
         (3, _) => {
             let b8 = bitmap::read_bit(p1, x - 3, w);
@@ -521,8 +557,15 @@ fn build_ctx_from_rows<const T: u8, const EXT: bool>(
             let b0 = bitmap::read_bit(cur, x - 1, w);
             let a1 = at_bit(p1, p2, cur, x, at[0].0, at[0].1, w);
             (a1 << 9)
-                | (b8 << 8) | (b7 << 7) | (b6 << 6) | (b5 << 5)
-                | (b4 << 4) | (b3 << 3) | (b2 << 2) | (b1 << 1) | b0
+                | (b8 << 8)
+                | (b7 << 7)
+                | (b6 << 6)
+                | (b5 << 5)
+                | (b4 << 4)
+                | (b3 << 3)
+                | (b2 << 2)
+                | (b1 << 1)
+                | b0
         }
         _ => 0,
     }
@@ -754,8 +797,7 @@ mod tests {
                 height: bm.height(),
                 x: 0,
                 y: 0,
-                external_combination_op:
-                    crate::segments::page_information::CombinationOp::Or,
+                external_combination_op: crate::segments::page_information::CombinationOp::Or,
                 colour_extension: false,
             },
             mmr: false,
@@ -773,7 +815,10 @@ mod tests {
         let mut cxs = fresh_mq_context();
         let mut dec = MqDecoder::new(&buf);
         let out = decode_generic_arith(&mut dec, &mut cxs, &header).unwrap();
-        assert_eq!(&out, bm, "mismatch with template={template} ext={ext} tpgdon={tpgdon}");
+        assert_eq!(
+            &out, bm,
+            "mismatch with template={template} ext={ext} tpgdon={tpgdon}"
+        );
     }
 
     #[test]

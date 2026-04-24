@@ -70,7 +70,9 @@ pub fn encode_integer(
     } else if abs <= (u32::MAX as u64 + 4436) {
         (&[1, 1, 1, 1, 1][..], 32, 4436)
     } else {
-        return Err(Jbig2Error::OutOfRange("IA* integer magnitude exceeds 32 bits"));
+        return Err(Jbig2Error::OutOfRange(
+            "IA* integer magnitude exceeds 32 bits",
+        ));
     };
 
     // Encode the prefix bits through the binary trie starting from CX=2 (for
@@ -108,11 +110,7 @@ fn advance_cx(mut n_cx: u32, bit: u8) -> u32 {
 
 /// Decode one signed integer from `dec`. Returns `None` if the decoder saw
 /// the out-of-band marker.
-pub fn decode_integer(
-    dec: &mut MqDecoder<'_>,
-    cxs: &mut MqContexts,
-    base: usize,
-) -> DecodedInt {
+pub fn decode_integer(dec: &mut MqDecoder<'_>, cxs: &mut MqContexts, base: usize) -> DecodedInt {
     let mut n_cx: u32 = 1;
     // S
     let s = dec.decode(cxs, base + n_cx as usize);
@@ -245,7 +243,9 @@ mod tests {
     #[test]
     fn integers_round_trip_buckets() {
         round_trip_values(&[0, 3, 4, 19, 20, 83, 84, 339, 340, 4435, 4436, 10_000]);
-        round_trip_values(&[-3, -4, -19, -20, -83, -84, -339, -340, -4435, -4436, -10_000]);
+        round_trip_values(&[
+            -3, -4, -19, -20, -83, -84, -339, -340, -4435, -4436, -10_000,
+        ]);
     }
 
     #[test]

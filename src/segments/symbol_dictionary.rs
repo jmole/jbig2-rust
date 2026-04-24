@@ -21,16 +21,14 @@ use crate::coding::mq::{MqContexts, MqDecoder, MqEncoder, MQ_NUM_CONTEXTS};
 use crate::coding::mq_context::{IAAI, IADH, IADW, IAEX, IAID, IARDX, IARDY};
 use crate::coding::mq_integer::{decode_iaid, decode_integer, encode_iaid, encode_integer, OOB};
 use crate::error::{Jbig2Error, Jbig2Result};
-use crate::segments::generic_region::{
-    decode_generic_bitmap, encode_generic_bitmap, nominal_at,
-};
+use crate::segments::generic_region::{decode_generic_bitmap, encode_generic_bitmap, nominal_at};
 use crate::segments::page_information::CombinationOp;
 use crate::segments::refinement_region::{decode_refinement_region, encode_refinement_region};
 use crate::segments::region_info::RegionInfo;
-use crate::segments::AtPixels;
 use crate::segments::text_region::{
     decode_text_region_body, sym_code_len, RefCorner, TextRegionHeader,
 };
+use crate::segments::AtPixels;
 
 /// Symbol dictionary segment header (the 2-byte flags field + AT pixels +
 /// SDNUMEXSYMS + SDNUMNEWSYMS). Refinement/aggregation fields are parsed but
@@ -188,7 +186,10 @@ impl SymbolDictionaryHeader {
             context_retained: false,
             sd_template: template,
             sd_rtemplate: false,
-            at: AtPixels::new(nominal_at(template, false).as_array(), if template == 0 { 4 } else { 1 }),
+            at: AtPixels::new(
+                nominal_at(template, false).as_array(),
+                if template == 0 { 4 } else { 1 },
+            ),
             rat: [(0, 0); 2],
             num_ex_syms: num_ex,
             num_new_syms: num_new,
@@ -252,9 +253,9 @@ pub fn decode_symbol_dictionary_with_contexts(
     let mut hc_height: i32 = 0;
     while (new_symbols.len() as u32) < header.num_new_syms {
         // Step 4 b): height-class delta height (must not be OOB).
-        let hcdh = decode_integer(&mut dec, &mut cxs, IADH).ok_or(
-            Jbig2Error::InvalidHuffman("symbol dictionary: IADH returned OOB"),
-        )?;
+        let hcdh = decode_integer(&mut dec, &mut cxs, IADH).ok_or(Jbig2Error::InvalidHuffman(
+            "symbol dictionary: IADH returned OOB",
+        ))?;
         hc_height = hc_height.saturating_add(hcdh);
         if hc_height < 0 {
             return Err(Jbig2Error::OutOfRange(
@@ -337,9 +338,9 @@ pub fn decode_symbol_dictionary_with_contexts(
             exhausted_body = true;
             break;
         }
-        let run = decode_integer(&mut dec, &mut cxs, IAEX).ok_or(
-            Jbig2Error::InvalidHuffman("symbol dictionary: IAEX returned OOB"),
-        )? as u32;
+        let run = decode_integer(&mut dec, &mut cxs, IAEX).ok_or(Jbig2Error::InvalidHuffman(
+            "symbol dictionary: IAEX returned OOB",
+        ))? as u32;
         let end = idx.checked_add(run).ok_or(Jbig2Error::OutOfRange(
             "symbol dictionary: export run overflows",
         ))?;
@@ -605,11 +606,9 @@ fn decode_symbol_dictionary_huffman(
             let run = b1_table.decode(&mut r)?.ok_or(Jbig2Error::InvalidHuffman(
                 "symbol dictionary: Huffman export run decoded as OOB",
             ))? as u32;
-            let end = idx
-                .checked_add(run)
-                .ok_or(Jbig2Error::OutOfRange(
-                    "symbol dictionary: export run overflows",
-                ))?;
+            let end = idx.checked_add(run).ok_or(Jbig2Error::OutOfRange(
+                "symbol dictionary: export run overflows",
+            ))?;
             if end > total {
                 return Err(Jbig2Error::OutOfRange(
                     "symbol dictionary: export run exceeds total symbol count",
@@ -674,7 +673,10 @@ fn decode_symbol_dictionary_huffman(
         exported = build_exported(&flags);
     }
 
-    Ok(DecodedSymbolDictionary { new_symbols, exported })
+    Ok(DecodedSymbolDictionary {
+        new_symbols,
+        exported,
+    })
 }
 
 /// Decode a single refinement/aggregate symbol (spec 6.5.8.2).
@@ -728,12 +730,12 @@ fn decode_refagg_symbol(
                 "symbol dictionary: aggregate ID exceeds symbol table",
             ));
         }
-        let rdx = decode_integer(dec, cxs, IARDX).ok_or(
-            Jbig2Error::InvalidHuffman("symbol dictionary: IARDX returned OOB"),
-        )?;
-        let rdy = decode_integer(dec, cxs, IARDY).ok_or(
-            Jbig2Error::InvalidHuffman("symbol dictionary: IARDY returned OOB"),
-        )?;
+        let rdx = decode_integer(dec, cxs, IARDX).ok_or(Jbig2Error::InvalidHuffman(
+            "symbol dictionary: IARDX returned OOB",
+        ))?;
+        let rdy = decode_integer(dec, cxs, IARDY).ok_or(Jbig2Error::InvalidHuffman(
+            "symbol dictionary: IARDY returned OOB",
+        ))?;
         let reference = symbol_by_index(import_symbols, new_so_far, id as usize);
         decode_refinement_region(
             dec,
@@ -848,9 +850,7 @@ pub fn encode_symbol_dictionary_refagg(
     }
 
     let mut cxs = MqContexts::new(MQ_NUM_CONTEXTS);
-    let mut enc = MqEncoder::new(
-        symbols.iter().map(|s| s.target.data().len()).sum::<usize>() + 64,
-    );
+    let mut enc = MqEncoder::new(symbols.iter().map(|s| s.target.data().len()).sum::<usize>() + 64);
 
     let mut i = 0;
     let mut prev_height: i32 = 0;
@@ -1032,7 +1032,12 @@ mod tests {
         let mut bm = Bitmap::new(w, h).unwrap();
         for y in 0..h {
             for x in 0..w {
-                if ((x.wrapping_mul(1103515245).wrapping_add(y.wrapping_mul(12345).wrapping_add(pattern))) & 0x8) != 0 {
+                if ((x
+                    .wrapping_mul(1103515245)
+                    .wrapping_add(y.wrapping_mul(12345).wrapping_add(pattern)))
+                    & 0x8)
+                    != 0
+                {
                     bm.set_pixel(x as i32, y as i32, 1);
                 }
             }
@@ -1056,7 +1061,8 @@ mod tests {
     #[test]
     fn round_trip_three_symbols_same_height() {
         let syms = vec![mkglyph(10, 12, 1), mkglyph(14, 12, 2), mkglyph(8, 12, 3)];
-        let hdr = SymbolDictionaryHeader::default_arithmetic(0, syms.len() as u32, syms.len() as u32);
+        let hdr =
+            SymbolDictionaryHeader::default_arithmetic(0, syms.len() as u32, syms.len() as u32);
         let body = encode_symbol_dictionary(&hdr, &syms, 0).unwrap();
         let dec = decode_symbol_dictionary(&hdr, &body, &[]).unwrap();
         assert_eq!(dec.new_symbols.len(), syms.len());
@@ -1076,7 +1082,8 @@ mod tests {
             mkglyph(14, 10, 4),
             mkglyph(20, 15, 5),
         ];
-        let hdr = SymbolDictionaryHeader::default_arithmetic(0, syms.len() as u32, syms.len() as u32);
+        let hdr =
+            SymbolDictionaryHeader::default_arithmetic(0, syms.len() as u32, syms.len() as u32);
         let body = encode_symbol_dictionary(&hdr, &syms, 0).unwrap();
         let dec = decode_symbol_dictionary(&hdr, &body, &[]).unwrap();
         for (i, s) in syms.iter().enumerate() {
@@ -1087,7 +1094,8 @@ mod tests {
     #[test]
     fn round_trip_template3() {
         let syms = vec![mkglyph(7, 9, 11), mkglyph(11, 9, 22)];
-        let hdr = SymbolDictionaryHeader::default_arithmetic(3, syms.len() as u32, syms.len() as u32);
+        let hdr =
+            SymbolDictionaryHeader::default_arithmetic(3, syms.len() as u32, syms.len() as u32);
         let body = encode_symbol_dictionary(&hdr, &syms, 0).unwrap();
         let dec = decode_symbol_dictionary(&hdr, &body, &[]).unwrap();
         assert_eq!(dec.new_symbols, syms);
@@ -1131,8 +1139,18 @@ mod tests {
         // First new symbol refines against the import; second refines
         // against the first new symbol (reference_id = 1 = imports.len() + 0).
         let syms = vec![
-            NewSymbol { target: import.clone(), reference_id: 0, rdx: 0, rdy: 0 },
-            NewSymbol { target: variant.clone(), reference_id: 1, rdx: 0, rdy: 0 },
+            NewSymbol {
+                target: import.clone(),
+                reference_id: 0,
+                rdx: 0,
+                rdy: 0,
+            },
+            NewSymbol {
+                target: variant.clone(),
+                reference_id: 1,
+                rdx: 0,
+                rdy: 0,
+            },
         ];
         let hdr = refagg_header(syms.len() as u32);
         let body = encode_symbol_dictionary_refagg(&hdr, &syms, &imports).unwrap();

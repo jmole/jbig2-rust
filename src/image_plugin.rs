@@ -29,10 +29,12 @@ pub fn register() {
         register_format_detection_hook("jb2".into(), &JBIG2_MAGIC, None);
         register_decoding_hook(
             "jb2".into(),
-            Box::new(|r: GenericReader<'_>| -> ImageResult<Box<dyn ImageDecoder + '_>> {
-                let decoder = Jbig2ImageDecoder::new(r).map_err(jbig2_to_image)?;
-                Ok(Box::new(decoder))
-            }),
+            Box::new(
+                |r: GenericReader<'_>| -> ImageResult<Box<dyn ImageDecoder + '_>> {
+                    let decoder = Jbig2ImageDecoder::new(r).map_err(jbig2_to_image)?;
+                    Ok(Box::new(decoder))
+                },
+            ),
         );
     });
 }
@@ -56,9 +58,12 @@ impl<R: Read + Seek> Jbig2ImageDecoder<R> {
     /// Parse the file header and enumerate segments.
     pub fn new(r: R) -> crate::Jbig2Result<Self> {
         let mut inner = Jbig2Decoder::new(r)?;
-        let has_page_info = inner
-            .segment_headers()
-            .any(|sh| matches!(sh.segment_type, crate::segments::SegmentType::PageInformation));
+        let has_page_info = inner.segment_headers().any(|sh| {
+            matches!(
+                sh.segment_type,
+                crate::segments::SegmentType::PageInformation
+            )
+        });
         let (w, h) = if has_page_info {
             match inner.decode_page(1) {
                 Ok(p) => {

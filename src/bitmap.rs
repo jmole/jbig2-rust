@@ -106,12 +106,7 @@ impl Bitmap {
     /// Construct a bitmap from an already-packed buffer. `stride` must be at
     /// least `ceil(width / 8)` and `data.len()` must equal
     /// `stride * height`.
-    pub fn from_packed(
-        width: u32,
-        height: u32,
-        stride: usize,
-        data: Vec<u8>,
-    ) -> Jbig2Result<Self> {
+    pub fn from_packed(width: u32, height: u32, stride: usize, data: Vec<u8>) -> Jbig2Result<Self> {
         let min_stride = stride_for(width)?;
         if stride < min_stride {
             return Err(Jbig2Error::InvalidGeometry("stride too small"));
@@ -120,7 +115,9 @@ impl Bitmap {
             .checked_mul(height as usize)
             .ok_or(Jbig2Error::InvalidGeometry("bitmap too large"))?;
         if data.len() != expected {
-            return Err(Jbig2Error::InvalidGeometry("data length != stride * height"));
+            return Err(Jbig2Error::InvalidGeometry(
+                "data length != stride * height",
+            ));
         }
         Ok(Self {
             width,

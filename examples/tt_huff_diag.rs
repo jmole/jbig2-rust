@@ -4,15 +4,15 @@
 mod common;
 
 use common::conformance_dir;
-use jbig2::Bitmap;
-use jbig2::coding::huffman::{HuffReader, standard_table};
+use jbig2::coding::huffman::{standard_table, HuffReader};
 use jbig2::segments::file_header::FileHeader;
-use jbig2::segments::halftone_region::{HalftoneRegionHeader, decode_halftone_region};
+use jbig2::segments::halftone_region::{decode_halftone_region, HalftoneRegionHeader};
 use jbig2::segments::header::SegmentHeader;
-use jbig2::segments::pattern_dictionary::{PatternDictionaryHeader, decode_pattern_dictionary};
-use jbig2::segments::symbol_dictionary::{SymbolDictionaryHeader, decode_symbol_dictionary};
-use jbig2::segments::text_region::{TextRegionHeader, decode_text_region};
+use jbig2::segments::pattern_dictionary::{decode_pattern_dictionary, PatternDictionaryHeader};
+use jbig2::segments::symbol_dictionary::{decode_symbol_dictionary, SymbolDictionaryHeader};
+use jbig2::segments::text_region::{decode_text_region, TextRegionHeader};
 use jbig2::segments::SegmentType;
+use jbig2::Bitmap;
 use std::collections::HashMap;
 use std::io::Cursor;
 
@@ -262,8 +262,10 @@ fn decode_tt1_page1_halftone_only() {
                 sh.number,
                 decode_pattern_dictionary(&hdr, &body[header_len..]).unwrap(),
             );
-        } else if matches!(sh.segment_type, SegmentType::ImmediateLosslessHalftoneRegion)
-            && sh.page_association == 1
+        } else if matches!(
+            sh.segment_type,
+            SegmentType::ImmediateLosslessHalftoneRegion
+        ) && sh.page_association == 1
         {
             let mut bcur = Cursor::new(body);
             let hdr = HalftoneRegionHeader::read(&mut bcur).unwrap();

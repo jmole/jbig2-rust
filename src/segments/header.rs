@@ -139,7 +139,15 @@ impl SegmentHeader {
             // after we know N. Store for now by embedding into the closure.
             // To avoid duplicating parsing, re-enter a branch below; track via
             // a temporary vector.
-            return continue_long_form(r, number, segment_type, deferred_non_retain, num, retain, page_assoc_size);
+            return continue_long_form(
+                r,
+                number,
+                segment_type,
+                deferred_non_retain,
+                num,
+                retain,
+                page_assoc_size,
+            );
         } else {
             return Err(Jbig2Error::InvalidSegmentHeader(
                 "invalid referred-to segment count field",
@@ -182,7 +190,11 @@ impl SegmentHeader {
 
         read_exact(r, &mut buf4)?;
         let raw_len = u32::from_be_bytes(buf4);
-        let data_length = if raw_len == 0xFFFF_FFFF { None } else { Some(raw_len) };
+        let data_length = if raw_len == 0xFFFF_FFFF {
+            None
+        } else {
+            Some(raw_len)
+        };
 
         let mut retain_bits = Vec::with_capacity((num_ref + 1) as usize);
         for i in 0..=num_ref {
@@ -212,7 +224,11 @@ impl SegmentHeader {
     pub fn write<W: Write>(&self, w: &mut W) -> Jbig2Result<()> {
         w.write_all(&self.number.to_be_bytes())?;
         let flags = self.segment_type.to_u8()
-            | if self.page_association > 0xFF { 0x40 } else { 0 }
+            | if self.page_association > 0xFF {
+                0x40
+            } else {
+                0
+            }
             | if self.deferred_non_retain { 0x80 } else { 0 };
         w.write_all(&[flags])?;
 

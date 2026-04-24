@@ -227,8 +227,7 @@ pub fn decode_halftone_region_with_contexts(
                 + mg as i64 * header.hry as i64
                 + ng as i64 * header.hrx as i64)
                 >> 8;
-            let y = ((header.hgy as i64)
-                + mg as i64 * header.hrx as i64
+            let y = ((header.hgy as i64) + mg as i64 * header.hrx as i64
                 - ng as i64 * header.hry as i64)
                 >> 8;
             if header.enable_skip

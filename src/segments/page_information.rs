@@ -119,8 +119,7 @@ impl PageInformation {
             | ((self.combination_op_override as u8) << 6)
             | ((self.may_contain_colour as u8) << 7);
         buf[16] = flags;
-        let stripe =
-            (self.maximum_stripe_size & 0x7FFF) | if self.is_striped { 0x8000 } else { 0 };
+        let stripe = (self.maximum_stripe_size & 0x7FFF) | if self.is_striped { 0x8000 } else { 0 };
         buf[17..19].copy_from_slice(&stripe.to_be_bytes());
         w.write_all(&buf).map_err(Jbig2Error::from)?;
         Ok(())

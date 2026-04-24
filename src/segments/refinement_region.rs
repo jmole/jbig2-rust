@@ -26,7 +26,7 @@ use std::io::{Read, Write};
 use crate::bitmap::Bitmap;
 use crate::coding::mq::{MqContexts, MqDecoder, MqEncoder};
 use crate::error::{Jbig2Error, Jbig2Result};
-use crate::segments::{AtPixels, region_info::RegionInfo};
+use crate::segments::{region_info::RegionInfo, AtPixels};
 
 /// SLTP context index used when `TPGRON = 1`. The spec leaves the bit
 /// assignment for the refinement template up to each implementation; we
@@ -86,7 +86,7 @@ impl RefinementRegionHeader {
         w.write_all(&[flags])?;
         if self.template == 0 {
             for i in 0..2 {
-                    w.write_all(&[self.at[i].0 as u8, self.at[i].1 as u8])?;
+                w.write_all(&[self.at[i].0 as u8, self.at[i].1 as u8])?;
             }
         }
         Ok(())
@@ -97,7 +97,20 @@ impl RefinementRegionHeader {
 /// placement is `(-1, -1)` for both the target-neighbourhood AT pixel
 /// (index 0) and the reference-neighbourhood AT pixel (index 1).
 pub const NOMINAL_REFINEMENT_AT: AtPixels = AtPixels::new(
-    [(-1, -1), (-1, -1), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0)],
+    [
+        (-1, -1),
+        (-1, -1),
+        (0, 0),
+        (0, 0),
+        (0, 0),
+        (0, 0),
+        (0, 0),
+        (0, 0),
+        (0, 0),
+        (0, 0),
+        (0, 0),
+        (0, 0),
+    ],
     2,
 );
 
@@ -133,7 +146,11 @@ pub fn decode_refinement_region(
     if width == 0 || height == 0 {
         return Ok(target);
     }
-    let sltp_cx = if template == 0 { SLTP_CX_T0 } else { SLTP_CX_T1 };
+    let sltp_cx = if template == 0 {
+        SLTP_CX_T0
+    } else {
+        SLTP_CX_T1
+    };
     let mut ltp: u8 = 0;
     for y in 0..height as i32 {
         if tpgron {
@@ -149,9 +166,7 @@ pub fn decode_refinement_region(
                     continue;
                 }
             }
-            let cx = build_refinement_ctx(
-                template, &target, reference, x, y, ref_x, ref_y, at,
-            );
+            let cx = build_refinement_ctx(template, &target, reference, x, y, ref_x, ref_y, at);
             let bit = dec.decode(cxs, cx);
             target.set_pixel(x, y, bit);
         }
@@ -188,7 +203,11 @@ pub fn encode_refinement_region(
     if width == 0 || height == 0 {
         return Ok(());
     }
-    let sltp_cx = if template == 0 { SLTP_CX_T0 } else { SLTP_CX_T1 };
+    let sltp_cx = if template == 0 {
+        SLTP_CX_T0
+    } else {
+        SLTP_CX_T1
+    };
     let mut ltp: u8 = 0;
     for y in 0..height as i32 {
         if tpgron {
@@ -206,9 +225,7 @@ pub fn encode_refinement_region(
                     continue;
                 }
             }
-            let cx = build_refinement_ctx(
-                template, target, reference, x, y, ref_x, ref_y, at,
-            );
+            let cx = build_refinement_ctx(template, target, reference, x, y, ref_x, ref_y, at);
             let bit = target.get_pixel(x, y);
             enc.encode(cxs, cx, bit);
         }
@@ -277,8 +294,7 @@ fn build_refinement_ctx(
     match template {
         0 => {
             let target_at = target.get_pixel(x + at[0].0 as i32, y + at[0].1 as i32) as u32;
-            let ref_at =
-                reference.get_pixel(ref_x + at[1].0 as i32, ref_y + at[1].1 as i32) as u32;
+            let ref_at = reference.get_pixel(ref_x + at[1].0 as i32, ref_y + at[1].1 as i32) as u32;
             let r_xp1_ym1 = reference.get_pixel(ref_x + 1, ref_y - 1) as u32;
             let r_x_ym1 = reference.get_pixel(ref_x, ref_y - 1) as u32;
             let cx = r_xp1_ym1
