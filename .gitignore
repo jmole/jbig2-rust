@@ -24,11 +24,19 @@ Cargo.lock.bak
 .env
 .env.local
 
-# Patent corpus (large)
+# Patent corpus (large, source symlink — not checked in)
 patent-samples
+
+# Frozen benchmark corpus is checked in for reproducibility;
+# guard against any future broad rule that might accidentally re-ignore it.
+!benchmark-corpus/
+!benchmark-corpus/**
+benchmark-corpus/rejected-tiffs/
 
 # Local sandbox CARGO_HOME
 /.cargo/
+vendor/.cargo/
 
-# Cursor project rules / local state
+# Editor / agent local state
 /.cursor/
+

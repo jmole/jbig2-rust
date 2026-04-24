@@ -1,0 +1,5 @@
+# Frozen patent corpus:
+# treat the TIFFs as opaque binary blobs (no diff/merge, no eol normalization)
+# and pin the manifest to LF so it stays stable across platforms.
+benchmark-corpus/patent-500/files/** binary
+benchmark-corpus/patent-500/manifest.tsv text eol=lf
