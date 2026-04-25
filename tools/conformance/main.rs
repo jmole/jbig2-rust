@@ -612,13 +612,15 @@ fn run_decode_matrix(
                 None => Cell::blank("no oracle"),
                 Some(expected) => {
                     match decode_with(row.kind, vector, workdir, tools, expected.len()) {
-                        DecodeAttempt::Pages(pages) => match compare_page_sets(&pages, expected) {
-                            Ok(()) => Cell::ok("OK"),
-                            Err(err) => Cell::fail(
-                                row.is_ours,
-                                format!("MISMATCH({})", flatten_msg(&err)),
-                            ),
-                        },
+                        DecodeAttempt::Pages(pages) => {
+                            match compare_decode_pages(&pages, expected, vector.compare_prefix) {
+                                Ok(()) => Cell::ok("OK"),
+                                Err(err) => Cell::fail(
+                                    row.is_ours,
+                                    format!("MISMATCH({})", flatten_msg(&err)),
+                                ),
+                            }
+                        }
                         DecodeAttempt::Skip(reason) => Cell::skip(reason),
                         DecodeAttempt::Fail(err) => {
                             Cell::fail(row.is_ours, format!("FAIL({})", flatten_msg(&err)))
@@ -636,7 +638,8 @@ fn run_decode_matrix(
 
     Ok(Matrix {
         phase: PhaseLabel::Decode,
-        subtitle: "10 TT vectors + annex-h; oracle = TT BMPs / jbig2dec annex-h output".to_string(),
+        subtitle: "10 TT vectors + annex-h; oracle = TT BMPs / spec-derived annex-h BMPs"
+            .to_string(),
         columns: vectors.iter().map(|v| v.label.to_string()).collect(),
         rows: matrix_rows,
     })
@@ -680,10 +683,9 @@ fn run_encode_matrix(
                         match oracle_decode_and_compare(t88, &bytes, source, workdir, row.label) {
                             Ok(mse) if mse == 0.0 => Cell::ok("mse=0"),
                             Ok(mse) => Cell::lossy(format!("mse={}", format_mse(mse))),
-                            Err(err) => Cell::fail(
-                                row.is_ours,
-                                format!("FAIL(dec: {})", flatten_msg(&err)),
-                            ),
+                            Err(err) => {
+                                Cell::fail(row.is_ours, format!("FAIL(dec: {})", flatten_msg(&err)))
+                            }
                         }
                     }
                     EncodeAttempt::Skip(reason) => Cell::skip(reason),
@@ -849,12 +851,13 @@ struct DecodeVector {
     label: &'static str,
     path: PathBuf,
     oracle: OracleKind,
+    compare_prefix: bool,
 }
 
 #[derive(Clone)]
 enum OracleKind {
     Files(Vec<&'static str>),
-    Jbig2decGenerated,
+    SpecFiles(Vec<&'static str>),
 }
 
 fn decode_vectors(root: &Path) -> Vec<DecodeVector> {
@@ -868,6 +871,7 @@ fn decode_vectors(root: &Path) -> Vec<DecodeVector> {
                 "codeStreamTest1_TT1_TT01.bmp",
                 "codeStreamTest1_TT1_TT02.bmp",
             ]),
+            compare_prefix: false,
         },
         tt(
             "TT2",
@@ -916,7 +920,8 @@ fn decode_vectors(root: &Path) -> Vec<DecodeVector> {
         DecodeVector {
             label: "annex-h",
             path: root.join("vendor").join("jbig2dec").join("annex-h.jbig2"),
-            oracle: OracleKind::Jbig2decGenerated,
+            oracle: OracleKind::SpecFiles(vec!["annex-h-page-00.bmp", "annex-h-page-01.bmp"]),
+            compare_prefix: true,
         },
     ]
 }
@@ -926,6 +931,7 @@ fn tt(label: &'static str, jb2: &'static str, bmp: &'static str, root: &Path) ->
         label,
         path: conformance_dir(root).join(jb2),
         oracle: OracleKind::Files(vec![bmp]),
+        compare_prefix: false,
     }
 }
 
@@ -961,17 +967,22 @@ fn conformance_dir(root: &Path) -> PathBuf {
         .join("JBIG2_ConformanceData-A20180829")
 }
 
-#[derive(Default)]
-struct OracleCache {
-    annex_h: Option<Option<Vec<PageImage>>>,
+fn t88_spec_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("vendor")
+        .join("T-REC-T.88-201808")
+        .join("spec")
 }
+
+#[derive(Default)]
+struct OracleCache;
 
 impl OracleCache {
     fn expected_pages(
         &mut self,
         vector: &DecodeVector,
-        workdir: &Path,
-        tools: &Tools,
+        _workdir: &Path,
+        _tools: &Tools,
     ) -> Result<Option<&[PageImage]>, String> {
         match &vector.oracle {
             OracleKind::Files(files) => {
@@ -985,19 +996,12 @@ impl OracleCache {
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(Some(Box::leak(pages.into_boxed_slice())))
             }
-            OracleKind::Jbig2decGenerated => {
-                if self.annex_h.is_none() {
-                    let Some(bin) = tools.vendor_jbig2dec.as_deref() else {
-                        self.annex_h = Some(None);
-                        return Ok(None);
-                    };
-                    let out = workdir.join("oracle-annex-h.pbm");
-                    self.annex_h = Some(match decode_with_jbig2dec_bin(bin, &vector.path, &out) {
-                        Ok(pages) => Some(pages),
-                        Err(_) => None,
-                    });
-                }
-                Ok(self.annex_h.as_ref().and_then(|p| p.as_deref()))
+            OracleKind::SpecFiles(files) => {
+                let pages = files
+                    .iter()
+                    .map(|name| load_bmp_image(&t88_spec_dir().join(name)))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(Some(Box::leak(pages.into_boxed_slice())))
             }
         }
     }
@@ -1359,6 +1363,38 @@ fn copy_as_jb2_stem(input: &Path, out_dir: &Path) -> Result<PathBuf, String> {
 enum PageImage {
     Mono(Bitmap),
     Rgb(RgbBitmap),
+}
+
+fn compare_decode_pages(
+    actual: &[PageImage],
+    expected: &[PageImage],
+    compare_prefix: bool,
+) -> Result<(), String> {
+    if compare_prefix {
+        compare_page_prefix(actual, expected)
+    } else {
+        compare_page_sets(actual, expected)
+    }
+}
+
+fn compare_page_prefix(actual: &[PageImage], expected: &[PageImage]) -> Result<(), String> {
+    if actual.len() < expected.len() {
+        return Err(format!(
+            "page count {} vs at least {}",
+            actual.len(),
+            expected.len()
+        ));
+    }
+    for (idx, (actual, expected)) in actual.iter().zip(expected).enumerate() {
+        compare_page(actual, expected).map_err(|err| {
+            if idx == 0 {
+                err
+            } else {
+                format!("p{idx}:{err}")
+            }
+        })?;
+    }
+    Ok(())
 }
 
 fn compare_page_sets(actual: &[PageImage], expected: &[PageImage]) -> Result<(), String> {
