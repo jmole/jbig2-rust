@@ -188,13 +188,17 @@ flowchart TD
 The current rendered state, copied verbatim from the harness:
 
 ```
-                 TT1  TT2  TT3  TT4  TT5  TT6  TT7  TT8  TT9  TT10  annex-h
-  system-binary  BRKN BRKN BRKN BRKN  WTF  WTF BRKN  KI    OK    OK       OK
-  jbig2dec       BRKN BRKN BRKN BRKN  WTF  WTF BRKN  KI    OK    OK       OK
-  itu-t88          OK   OK   OK   OK   OK   OK   OK  OK    OK    OK     BRKN
-  java           BRKN BRKN BRKN BRKN BRKN BRKN BRKN BRKN   OK    OK       OK
-  rust            ERR   OK   OK   OK  ERR   OK   OK  OK    OK    OK      ERR
+                  TT1   TT2   TT3   TT4   TT5   TT6   TT7   TT8   TT9  TT10  annex-h
+  system-binary  BRKN  BRKN  BRKN  BRKN   WTF   WTF  BRKN    KI    OK    OK       OK
+  jbig2dec       BRKN  BRKN  BRKN  BRKN   WTF   WTF  BRKN    KI    OK    OK       OK
+  itu-t88          OK    OK    OK    OK    OK    OK    OK    OK    OK    OK     BRKN
+  java           BRKN  BRKN  BRKN  BRKN  BRKN  BRKN  BRKN  BRKN    OK    OK       OK
+  rust             OK    OK    OK    OK    OK    OK    OK    OK    OK    OK       OK
 ```
+
+Rolled-up totals: `decode 30 ok, 2 ki, 4 wtf, 0 err, 19 brkn, 0 skip, 0 blank, 0
+resolved, 0 drifted` (from `loaded 8 known-issue entries from
+tools/conformance/known-issues.ron`).
 
 `OK` means the decoder produced the oracle pixels. `BRKN` is a third-party
 decoder breakage we have not (yet) cataloged. `KI` is a cataloged known
@@ -375,9 +379,9 @@ The ITU reference C++ decoder crashes on the Artifex `annex-h.jbig2` vector.
 That vector uses pattern dictionaries, halftone regions, immediate-lossless
 variants, and a multi-segment structure that the 2018-vintage reference C++
 decoder was never built to handle robustly. This is a known fragility of the
-ITU reference codebase rather than a property of `annex-h`: `jbig2dec` and
-`system-binary` decode the same file without complaint, and the Java ImageIO
-adapter now also decodes the first two oracle pages successfully.
+ITU reference codebase rather than a property of `annex-h`: `jbig2dec`,
+`system-binary`, the Java ImageIO adapter, and `jbig2-rust` all decode the
+same file without complaint and produce the spec-derived oracle pixels.
 
 **Classification:** Bucket 1. Reproducible third-party limitation in code that
 nobody ships, in a vector authored by Artifex specifically. Keep visible as a
