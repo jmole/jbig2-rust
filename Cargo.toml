@@ -26,6 +26,7 @@ image = ["dep:image"]
 rayon = ["dep:rayon"]
 mmr = []
 cli = ["dep:clap", "dep:anyhow", "dep:image"]
+conformance-tools = ["dep:ron", "dep:serde"]
 
 [dependencies]
 thiserror = "1"
@@ -33,6 +34,8 @@ image = { version = "0.25", default-features = false, features = ["png", "tiff",
 rayon = { version = "1", optional = true }
 clap = { version = "4", features = ["derive"], optional = true }
 anyhow = { version = "1", optional = true }
+ron = { version = "0.12.1", optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
 
 [dev-dependencies]
 proptest = "1"
@@ -51,6 +54,11 @@ name = "corpus-encode"
 path = "tools/corpus/corpus_encode.rs"
 required-features = ["image"]
 
+[[bin]]
+name = "conformance-matrix"
+path = "tools/conformance/main.rs"
+required-features = ["image", "conformance-tools"]
+
 [profile.release]
 opt-level = 3
 lto = "thin"
@@ -60,4 +68,3 @@ codegen-units = 1
 opt-level = 3
 lto = "thin"
 codegen-units = 1
-

@@ -1,0 +1,51 @@
+#![enable(implicit_some)]
+[
+    (
+        phase: Decode,
+        row: "jbig2dec",
+        column: "TT8",
+        expect: FailContaining("color segments (NYI)"),
+        upstream: "jbig2dec: AMD3 colour palette segments are unimplemented; the decoder prints this message from its own page-segment handler",
+        evidence: "vendor/jbig2dec/jbig2_page.c:124 prints `page segment indicates use of color segments (NYI)`",
+        vendor: Some(GitSha(
+            path: "vendor/jbig2dec",
+            sha: "6ecb04980813d693234190021bd1cf874c05b1b4",
+        )),
+    ),
+    (
+        phase: Decode,
+        row: "system-binary",
+        column: "TT8",
+        expect: FailContaining("color segments (NYI)"),
+        upstream: "Same as jbig2dec row; the system jbig2dec is expected to be the same Artifex decoder family",
+        evidence: "Observed system-binary row emits the same `color segments (NYI)` message as vendor/jbig2dec/jbig2_page.c:124",
+        vendor: Some(GitSha(
+            path: "vendor/jbig2dec",
+            sha: "6ecb04980813d693234190021bd1cf874c05b1b4",
+        )),
+    ),
+    (
+        phase: Encode,
+        row: "system-binary:-s -r -d -t 0.85",
+        column: "*",
+        expect: FailContaining("Refinement broke in recent releases"),
+        upstream: "Upstream jbig2enc marks the refinement code path broken; the error message tells the caller to file an upstream issue against agl@imperialviolet.org",
+        evidence: "vendor/jbig2enc/src/jbig2.cc:292 prints `Refinement broke in recent releases`",
+        vendor: Some(GitSha(
+            path: "vendor/jbig2enc",
+            sha: "e3fcf0210efa4f644e458a51616d86098d47d8da",
+        )),
+    ),
+    (
+        phase: Encode,
+        row: "jbig2enc:-s -r -d -t 0.85",
+        column: "*",
+        expect: FailContaining("Refinement broke in recent releases"),
+        upstream: "Same as system-binary row; vendored jbig2enc copy",
+        evidence: "vendor/jbig2enc/src/jbig2.cc:292 prints `Refinement broke in recent releases`",
+        vendor: Some(GitSha(
+            path: "vendor/jbig2enc",
+            sha: "e3fcf0210efa4f644e458a51616d86098d47d8da",
+        )),
+    ),
+]
