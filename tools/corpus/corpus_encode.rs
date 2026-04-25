@@ -95,6 +95,8 @@ fn rust_config(preset: &str) -> Result<EncoderConfig, String> {
             generic_region_duplicate_line_removal: false,
             symbol_threshold: 0.97,
             refine_after_match: false,
+            refinement_gate: Default::default(),
+            rate_select: false,
         }),
         "generic-t0-tpgd" => Ok(EncoderConfig {
             generic_region_duplicate_line_removal: true,
@@ -109,6 +111,8 @@ fn rust_config(preset: &str) -> Result<EncoderConfig, String> {
             generic_region_duplicate_line_removal: true,
             symbol_threshold: 0.85,
             refine_after_match: false,
+            refinement_gate: Default::default(),
+            rate_select: false,
         }),
         other => Err(format!("unknown rust preset {other:?}")),
     }

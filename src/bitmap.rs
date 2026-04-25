@@ -61,6 +61,112 @@ pub struct Bitmap {
     data: Vec<u8>,
 }
 
+/// Sequential bit reader for a packed row.
+///
+/// Hot generic-region row loops consume neighbour pixels strictly left to
+/// right. Keeping the current source byte and bit mask in registers avoids
+/// redoing the byte-index / shift arithmetic that [`read_bit`] performs for
+/// every random access.
+pub(crate) struct RowBitCursor<'a> {
+    row: &'a [u8],
+    width: i32,
+    x: i32,
+    byte_idx: usize,
+    byte: u8,
+    mask: u8,
+}
+
+impl<'a> RowBitCursor<'a> {
+    #[inline]
+    pub(crate) fn new(row: &'a [u8], width: u32) -> Self {
+        Self {
+            row,
+            width: width as i32,
+            x: 0,
+            byte_idx: 0,
+            byte: row.first().copied().unwrap_or(0),
+            mask: 0x80,
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn next_bit(&mut self) -> u32 {
+        let bit = if (self.x as u32) >= (self.width as u32) {
+            0
+        } else {
+            ((self.byte & self.mask) != 0) as u32
+        };
+        self.advance();
+        bit
+    }
+
+    #[inline(always)]
+    fn advance(&mut self) {
+        self.x += 1;
+        self.mask >>= 1;
+        if self.mask == 0 {
+            self.byte_idx += 1;
+            self.byte = self.row.get(self.byte_idx).copied().unwrap_or(0);
+            self.mask = 0x80;
+        }
+    }
+}
+
+/// Sequential bit writer for a packed row.
+///
+/// The generic-region fast paths produce pixels strictly left to right. This
+/// writer accumulates the current destination byte in a register and flushes
+/// only on byte boundaries (or at the end of the row).
+pub(crate) struct RowBitBuffer<'a> {
+    row: &'a mut [u8],
+    width: u32,
+    x: u32,
+    byte_idx: usize,
+    byte: u8,
+}
+
+impl<'a> RowBitBuffer<'a> {
+    #[inline]
+    pub(crate) fn new(row: &'a mut [u8], width: u32) -> Self {
+        row.fill(0);
+        Self {
+            row,
+            width,
+            x: 0,
+            byte_idx: 0,
+            byte: 0,
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn push_bit(&mut self, bit: u32) {
+        if self.x >= self.width {
+            return;
+        }
+        if bit != 0 {
+            self.byte |= 1u8 << (7 - (self.x & 7));
+        }
+        self.x += 1;
+        if (self.x & 7) == 0 || self.x == self.width {
+            self.flush_byte();
+        }
+    }
+
+    #[inline]
+    pub(crate) fn finish(mut self) {
+        if (self.x & 7) != 0 && self.byte_idx < self.row.len() {
+            self.flush_byte();
+        }
+    }
+
+    #[inline(always)]
+    fn flush_byte(&mut self) {
+        self.row[self.byte_idx] = self.byte;
+        self.byte_idx += 1;
+        self.byte = 0;
+    }
+}
+
 impl Bitmap {
     /// Create a new empty (all-zero) bitmap of the given size.
     ///

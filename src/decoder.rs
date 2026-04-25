@@ -825,8 +825,8 @@ fn refinement_reference_for<'a>(
             return Ok((Cow::Borrowed(bm), 0, 0));
         }
     }
-    // Fall back to the page bitmap clipped to the region box. This mirrors
-    // jbig2dec's behaviour for "implicit" reference refinement regions.
+    // No decoded region reference was available; snapshot the current page
+    // under this region's bounds so refinement can use local coordinates.
     let w = header.region.width;
     let h = header.region.height;
     let mut bm = Bitmap::new(w, h)?;

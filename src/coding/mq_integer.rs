@@ -58,6 +58,9 @@ pub fn encode_integer(
     // Walk a trie of the 6 prefix bits while simultaneously figuring out the
     // magnitude bucket and the mantissa bit count.
     let (prefix_bits, mant_bits, bias) = if abs <= 3 {
+        // Annex A still emits the leading `d0 = 0` branch bit for the
+        // 0..=3 bucket, then follows with the 2-bit payload. Omitting that
+        // prefix desynchronizes every subsequent field in the IA* stream.
         (&[0u8][..], 2u32, 0u64)
     } else if abs <= 19 {
         (&[1, 0][..], 4, 4)
@@ -79,11 +82,9 @@ pub fn encode_integer(
     // sign=0) or CX=3 (for sign=1). Subsequent prefix bits use
     // CX = (CX<<1)|bit, capped into the 0x100..0x1ff band after hitting 0xff.
     let mut n_cx: u32 = 2 + sign as u32;
-    for (k, &bit) in prefix_bits.iter().enumerate() {
+    for &bit in prefix_bits.iter() {
         enc.encode(cxs, base + n_cx as usize, bit);
-        if k + 1 < prefix_bits.len() || mant_bits > 0 {
-            n_cx = advance_cx(n_cx, bit);
-        }
+        n_cx = advance_cx(n_cx, bit);
     }
 
     // Encode the mantissa bits (MSB first) of `abs - bias` in `mant_bits`

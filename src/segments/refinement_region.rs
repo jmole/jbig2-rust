@@ -237,8 +237,7 @@ pub fn encode_refinement_region(
 /// The bit assignment is implementation-defined by the spec (6.3.5.3
 /// only requires it to be consistent across encoder and decoder). The T.88
 /// conformance streams were authored by the ITU sample encoder, so this layout
-/// mirrors `Jb2_MQLapper.cpp::CX_RefEncode` rather than `jbig2dec`'s private
-/// refinement context order.
+/// mirrors `Jb2_MQLapper.cpp::CX_RefEncode`.
 ///
 /// Template 0 (13-bit context):
 ///

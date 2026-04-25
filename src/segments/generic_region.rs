@@ -17,11 +17,11 @@
 //! * [`decode_generic_bitmap`] owns the per-row setup: it grabs a reference
 //!   to the previous two rows and a mutable slice to the row being built, so
 //!   the inner loop never has to recompute row offsets.
-//! * [`decode_row_t0_nominal`] is the template-0, nominal-AT fast path — the
-//!   case all of the shipped conformance files and every real-world JBIG2
-//!   encoder land in. It maintains three small sliding registers (one per
-//!   row used by the template) and shifts a new right-edge bit in per pixel
-//!   instead of rebuilding the context from scratch, then pastes the
+//! * [`decode_row_t0_nominal`] and [`decode_row_t3_nominal`] are the
+//!   nominal-AT fast paths for the two templates the crate's presets
+//!   exercise most often. They maintain small sliding registers (one per
+//!   row used by the template) and shift a new right-edge bit in per pixel
+//!   instead of rebuilding the context from scratch, then paste the
 //!   decoded pixel into the current row with a single OR into a packed
 //!   byte.
 //! * [`decode_row_generic`] is the fall-through for templates 1..3, the
@@ -58,12 +58,12 @@
 //! fast path the overwhelmingly dominant path in practice.
 //!
 //! The follow-up plan therefore treats additional fast paths as
-//! benchmark-driven work: we do not implement T1/T2/T3 or AMD2 fast
-//! paths today. The reopening criteria are:
+//! benchmark-driven work: we implement the T3 path because
+//! [`crate::encoder::EncoderConfig::fast`] selects it, but T1/T2 and AMD2
+//! remain deferred. The reopening criteria are:
 //!
 //! * An external workload shows >5% of total decode time in one of the
-//!   fallback rows (most likely Template 3, which `EncoderConfig::fast`
-//!   selects when the caller opts out of symbol coding), **or**
+//!   remaining fallback rows (most likely Template 1/2 or AMD2), **or**
 //! * A JBIG2 producer starts shipping files with AMD2 / non-nominal AT
 //!   often enough to move the `arith_fallbacks` group above the
 //!   `arith_raw` numbers on the files users actually decode.
@@ -310,6 +310,7 @@ pub fn decode_generic_bitmap(
             (0, true, _) => decode_row_generic::<0, true>(dec, cxs, width, p2, p1, cur, at),
             (1, _, _) => decode_row_generic::<1, false>(dec, cxs, width, p2, p1, cur, at),
             (2, _, _) => decode_row_generic::<2, false>(dec, cxs, width, p2, p1, cur, at),
+            (3, false, true) => decode_row_t3_nominal(dec, cxs, width, p1, cur),
             (3, _, _) => decode_row_generic::<3, false>(dec, cxs, width, p2, p1, cur, at),
             _ => return Err(Jbig2Error::InvalidSegmentHeader("unknown GB template")),
         }
@@ -344,30 +345,56 @@ fn decode_row_t0_nominal(
     cur: &mut [u8],
 ) {
     let w = width as i32;
+    let mut p2_bits = bitmap::RowBitCursor::new(p2, width);
+    let mut p1_bits = bitmap::RowBitCursor::new(p1, width);
+    let mut cur_bits = bitmap::RowBitBuffer::new(cur, width);
     // Pre-fill the right edges of the two upper-row registers so that the
     // register content at x=0 already holds pix(0,y-2), pix(1,y-2),
     // pix(2,y-2) and pix(0..3, y-1) in the positions required by
     // `compose_ctx_t0`.
-    let mut cx_y2: u32 = (bitmap::read_bit(p2, 0, w) << 2)
-        | (bitmap::read_bit(p2, 1, w) << 1)
-        | bitmap::read_bit(p2, 2, w);
-    let mut cx_y1: u32 = (bitmap::read_bit(p1, 0, w) << 3)
-        | (bitmap::read_bit(p1, 1, w) << 2)
-        | (bitmap::read_bit(p1, 2, w) << 1)
-        | bitmap::read_bit(p1, 3, w);
+    let mut cx_y2: u32 = (p2_bits.next_bit() << 2) | (p2_bits.next_bit() << 1) | p2_bits.next_bit();
+    let mut cx_y1: u32 = (p1_bits.next_bit() << 3)
+        | (p1_bits.next_bit() << 2)
+        | (p1_bits.next_bit() << 1)
+        | p1_bits.next_bit();
     let mut cx_y0: u32 = 0;
-    for x in 0..w {
+    for _x in 0..w {
         let cx = compose_ctx_t0(cx_y2, cx_y1, cx_y0);
         let d = dec.decode(cxs, cx as usize) as u32;
-        if d != 0 {
-            let idx = (x as usize) >> 3;
-            let shift = 7 - (x as u32 & 7);
-            cur[idx] |= 1u8 << shift;
-        }
-        cx_y2 = ((cx_y2 << 1) | bitmap::read_bit(p2, x + 3, w)) & 0x1F;
-        cx_y1 = ((cx_y1 << 1) | bitmap::read_bit(p1, x + 4, w)) & 0x7F;
+        cur_bits.push_bit(d);
+        cx_y2 = ((cx_y2 << 1) | p2_bits.next_bit()) & 0x1F;
+        cx_y1 = ((cx_y1 << 1) | p1_bits.next_bit()) & 0x7F;
         cx_y0 = ((cx_y0 << 1) | d) & 0xF;
     }
+    cur_bits.finish();
+}
+
+/// Template-3 standard, nominal AT, fast-path decoder.
+///
+/// T3 uses a 10-bit context spanning one upper row plus the four already
+/// decoded bits on the current row. The nominal AT pixel sits at `(x+2, y-1)`,
+/// so a single 6-bit sliding window over `p1` holds `b8..b4` plus `a1`.
+#[inline(always)]
+fn decode_row_t3_nominal(
+    dec: &mut MqDecoder<'_>,
+    cxs: &mut MqContexts,
+    width: u32,
+    p1: &[u8],
+    cur: &mut [u8],
+) {
+    let w = width as i32;
+    let mut p1_bits = bitmap::RowBitCursor::new(p1, width);
+    let mut cur_bits = bitmap::RowBitBuffer::new(cur, width);
+    let mut cx_y1: u32 = (p1_bits.next_bit() << 2) | (p1_bits.next_bit() << 1) | p1_bits.next_bit();
+    let mut cx_y0: u32 = 0;
+    for _x in 0..w {
+        let cx = compose_ctx_t3(cx_y1, cx_y0);
+        let d = dec.decode(cxs, cx as usize) as u32;
+        cur_bits.push_bit(d);
+        cx_y1 = ((cx_y1 << 1) | p1_bits.next_bit()) & 0x3F;
+        cx_y0 = ((cx_y0 << 1) | d) & 0xF;
+    }
+    cur_bits.finish();
 }
 
 /// Compose the 16-bit GB template-0 context from the three sliding
@@ -388,6 +415,13 @@ fn compose_ctx_t0(y2: u32, y1: u32, y0: u32) -> u32 {
         | ((y2 & 0x0E) << 8)  // b11..b9 -> C[11..9]
         | ((y1 & 0x3E) << 3)  // b8..b4 -> C[8..4]
         | y0 // b3..b0 -> C[3..0]
+}
+
+/// Compose the 10-bit GB template-3 context from the two sliding
+/// registers used by [`decode_row_t3_nominal`].
+#[inline(always)]
+fn compose_ctx_t3(y1: u32, y0: u32) -> u32 {
+    ((y1 & 0x01) << 9) | ((y1 & 0x3E) << 3) | y0
 }
 
 /// Fall-through decoder for templates 1..3, the extended AMD2 template,
@@ -639,6 +673,7 @@ pub fn encode_generic_bitmap(
             }
             (1, _, _) => encode_row_generic::<1, false>(enc, cxs, w, p2, p1, cur, at),
             (2, _, _) => encode_row_generic::<2, false>(enc, cxs, w, p2, p1, cur, at),
+            (3, false, true) => encode_row_t3_nominal(enc, cxs, width, p1, cur),
             (3, _, _) => encode_row_generic::<3, false>(enc, cxs, w, p2, p1, cur, at),
             _ => return Err(Jbig2Error::InvalidSegmentHeader("unknown GB template")),
         }
@@ -656,20 +691,43 @@ fn encode_row_t0_nominal(
     cur: &[u8],
 ) {
     let w = width as i32;
-    let mut cx_y2: u32 = (bitmap::read_bit(p2, 0, w) << 2)
-        | (bitmap::read_bit(p2, 1, w) << 1)
-        | bitmap::read_bit(p2, 2, w);
-    let mut cx_y1: u32 = (bitmap::read_bit(p1, 0, w) << 3)
-        | (bitmap::read_bit(p1, 1, w) << 2)
-        | (bitmap::read_bit(p1, 2, w) << 1)
-        | bitmap::read_bit(p1, 3, w);
+    let mut p2_bits = bitmap::RowBitCursor::new(p2, width);
+    let mut p1_bits = bitmap::RowBitCursor::new(p1, width);
+    let mut cur_bits = bitmap::RowBitCursor::new(cur, width);
+    let mut cx_y2: u32 = (p2_bits.next_bit() << 2) | (p2_bits.next_bit() << 1) | p2_bits.next_bit();
+    let mut cx_y1: u32 = (p1_bits.next_bit() << 3)
+        | (p1_bits.next_bit() << 2)
+        | (p1_bits.next_bit() << 1)
+        | p1_bits.next_bit();
     let mut cx_y0: u32 = 0;
-    for x in 0..w {
+    for _x in 0..w {
         let cx = compose_ctx_t0(cx_y2, cx_y1, cx_y0);
-        let bit = bitmap::read_bit(cur, x, w);
+        let bit = cur_bits.next_bit();
         enc.encode(cxs, cx as usize, bit as u8);
-        cx_y2 = ((cx_y2 << 1) | bitmap::read_bit(p2, x + 3, w)) & 0x1F;
-        cx_y1 = ((cx_y1 << 1) | bitmap::read_bit(p1, x + 4, w)) & 0x7F;
+        cx_y2 = ((cx_y2 << 1) | p2_bits.next_bit()) & 0x1F;
+        cx_y1 = ((cx_y1 << 1) | p1_bits.next_bit()) & 0x7F;
+        cx_y0 = ((cx_y0 << 1) | bit) & 0xF;
+    }
+}
+
+#[inline(always)]
+fn encode_row_t3_nominal(
+    enc: &mut MqEncoder,
+    cxs: &mut MqContexts,
+    width: u32,
+    p1: &[u8],
+    cur: &[u8],
+) {
+    let w = width as i32;
+    let mut p1_bits = bitmap::RowBitCursor::new(p1, width);
+    let mut cur_bits = bitmap::RowBitCursor::new(cur, width);
+    let mut cx_y1: u32 = (p1_bits.next_bit() << 2) | (p1_bits.next_bit() << 1) | p1_bits.next_bit();
+    let mut cx_y0: u32 = 0;
+    for _x in 0..w {
+        let cx = compose_ctx_t3(cx_y1, cx_y0);
+        let bit = cur_bits.next_bit();
+        enc.encode(cxs, cx as usize, bit as u8);
+        cx_y1 = ((cx_y1 << 1) | p1_bits.next_bit()) & 0x3F;
         cx_y0 = ((cx_y0 << 1) | bit) & 0xF;
     }
 }
@@ -896,6 +954,33 @@ mod tests {
                 let d = bitmap::read_bit(cur, x, w);
                 cx_y2 = ((cx_y2 << 1) | bitmap::read_bit(p2, x + 3, w)) & 0x1F;
                 cx_y1 = ((cx_y1 << 1) | bitmap::read_bit(p1, x + 4, w)) & 0x7F;
+                cx_y0 = ((cx_y0 << 1) | d) & 0xF;
+            }
+        }
+    }
+
+    #[test]
+    fn fast_path_matches_slow_path_t3() {
+        let bm = random_bitmap(80, 24, 0.35, 0xd00d);
+        let w = bm.width() as i32;
+        let at = nominal_at(3, false);
+        let zero = vec![0u8; bm.stride()];
+        for y in 0..bm.height() as usize {
+            let p1 = if y >= 1 { bm.row(y - 1) } else { &zero[..] };
+            let cur = bm.row(y);
+            let mut cx_y1: u32 = (bitmap::read_bit(p1, 0, w) << 2)
+                | (bitmap::read_bit(p1, 1, w) << 1)
+                | bitmap::read_bit(p1, 2, w);
+            let mut cx_y0: u32 = 0;
+            for x in 0..w {
+                let got = compose_ctx_t3(cx_y1, cx_y0);
+                let want = build_ctx_from_rows::<3, false>(&zero, p1, cur, x, w, &at);
+                assert_eq!(
+                    got, want,
+                    "template-3 context mismatch at (x={x}, y={y}): got=0x{got:04x} want=0x{want:04x}"
+                );
+                let d = bitmap::read_bit(cur, x, w);
+                cx_y1 = ((cx_y1 << 1) | bitmap::read_bit(p1, x + 3, w)) & 0x3F;
                 cx_y0 = ((cx_y0 << 1) | d) & 0xF;
             }
         }

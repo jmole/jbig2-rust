@@ -927,10 +927,7 @@ pub fn encode_symbol_dictionary_refagg(
         }
     }
 
-    // Emit the export flags exactly as 6.5.10 specifies so downstream
-    // decoders (notably jbig2dec) see a standards-compliant run-length
-    // stream rather than the T.88 sample encoder's `IAEX(0), IAEX(0)`
-    // shortcut.
+    // Emit the export flags exactly as 6.5.10 specifies
     encode_integer(&mut enc, &mut cxs, IAEX, imports.len() as i32)?;
     encode_integer(&mut enc, &mut cxs, IAEX, header.num_new_syms as i32)?;
 

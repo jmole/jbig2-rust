@@ -40,6 +40,10 @@ pub struct LossyClassification {
     pub symbols: Vec<Bitmap>,
     /// For each input component, the index into `symbols`.
     pub instance_symbol: Vec<u32>,
+    /// Number of exact-match symbols before the lossy merge pass.
+    pub identity_symbol_count: u32,
+    /// XOR popcount between each input component and its final representative.
+    pub instance_xor_popcount: Vec<u32>,
     /// Number of lossy (non-identity) merges performed.
     pub lossy_merge_count: u32,
 }
@@ -58,9 +62,13 @@ pub fn classify_lossy(components: &[Component], threshold: f32) -> LossyClassifi
     let max_disagreement = 1.0 - threshold.clamp(0.0, 1.0);
 
     if threshold >= 1.0 {
+        let len = identity.instance_symbol.len();
+        let identity_symbol_count = identity.symbols.len() as u32;
         return LossyClassification {
             symbols: identity.symbols,
             instance_symbol: identity.instance_symbol,
+            identity_symbol_count,
+            instance_xor_popcount: vec![0; len],
             lossy_merge_count: 0,
         };
     }
@@ -111,7 +119,7 @@ pub fn classify_lossy(components: &[Component], threshold: f32) -> LossyClassifi
                             continue;
                         }
                         let cand_bm = &identity.symbols[cand as usize];
-                        if wxor_distance(rep_bm, cand_bm) <= max_disagreement {
+                        if xor_stats(rep_bm, cand_bm).distance <= max_disagreement {
                             remap[cand as usize] = rep;
                             merged[cand as usize] = true;
                             merge_count += 1;
@@ -142,18 +150,46 @@ pub fn classify_lossy(components: &[Component], threshold: f32) -> LossyClassifi
         .iter()
         .map(|&s| new_idx[s as usize])
         .collect();
+    let instance_xor_popcount = components
+        .iter()
+        .zip(instance_symbol.iter())
+        .map(|(component, &sym_idx)| {
+            let symbol = &new_symbols[sym_idx as usize];
+            if component.bitmap == *symbol {
+                0
+            } else {
+                xor_stats(&component.bitmap, symbol).popcount
+            }
+        })
+        .collect();
 
     LossyClassification {
         symbols: new_symbols,
         instance_symbol,
+        identity_symbol_count: identity.symbols.len() as u32,
+        instance_xor_popcount,
         lossy_merge_count: merge_count,
     }
+}
+
+/// Weighted-XOR details between two bitmaps after center alignment.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct XorStats {
+    /// Number of differing pixels after padding and center alignment.
+    pub popcount: u32,
+    /// Normalised distance: `popcount / min(foreground(a), foreground(b))`.
+    pub distance: f32,
 }
 
 /// Normalised weighted-XOR distance. Accepts dissimilar sizes by padding
 /// the smaller bitmap with zeros to the larger common box. Output is in
 /// `[0.0, 2.0]` (roughly — bounded by `xor_popcount / min_area`).
 pub fn wxor_distance(a: &Bitmap, b: &Bitmap) -> f32 {
+    xor_stats(a, b).distance
+}
+
+/// Count differing pixels and the normalised weighted-XOR distance.
+pub fn xor_stats(a: &Bitmap, b: &Bitmap) -> XorStats {
     let aw = a.width().max(b.width());
     let ah = a.height().max(b.height());
     let (ofx_a, ofy_a) = centre_offset(a, aw, ah);
@@ -177,7 +213,10 @@ pub fn wxor_distance(a: &Bitmap, b: &Bitmap) -> f32 {
         }
     }
     let min_count = a_count.min(b_count).max(1) as f32;
-    xor_count as f32 / min_count
+    XorStats {
+        popcount: xor_count.min(u32::MAX as u64) as u32,
+        distance: xor_count as f32 / min_count,
+    }
 }
 
 fn centre_offset(bm: &Bitmap, target_w: u32, target_h: u32) -> (i32, i32) {

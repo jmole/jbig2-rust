@@ -17,6 +17,7 @@ use crate::segments::{
     halftone_region::{encode_halftone_region_with_contexts, HalftoneRegionHeader},
     page_information::{CombinationOp, PageInformation},
     pattern_dictionary::{encode_pattern_dictionary_with_contexts, PatternDictionaryHeader},
+    refinement_region::NOMINAL_REFINEMENT_AT,
     region_info::RegionInfo,
     symbol_dictionary::{encode_symbol_dictionary_with_contexts, SymbolDictionaryHeader},
     text_region::{
@@ -26,7 +27,9 @@ use crate::segments::{
     AtPixels, SegmentHeader, SegmentType,
 };
 use crate::symbol::{
-    cc::extract_components, classify::classify_lossy, identity::classify_identity,
+    cc::extract_components,
+    classify::{classify_lossy, xor_stats},
+    identity::classify_identity,
 };
 
 /// Generic region template selector.
@@ -155,6 +158,38 @@ pub struct EncoderConfig {
     pub symbol_threshold: f32,
     /// Run a post-match refinement pass on matched symbols (lossy path).
     pub refine_after_match: bool,
+    /// Lossless refinement/promotion heuristics for lossy-symbol + refinement mode.
+    pub refinement_gate: RefinementGate,
+    /// Try multiple lossless encodings and emit the smallest valid page stream.
+    #[doc(hidden)]
+    pub rate_select: bool,
+}
+
+/// Lossless heuristics that decide whether differing matched symbols should
+/// stay as refinements or be promoted to exact dictionary symbols.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RefinementGate {
+    /// Promote differing instances whose XOR popcount is below this threshold.
+    pub min_xor_popcount: u32,
+    /// Promote differing instances whose XOR popcount divided by bitmap area
+    /// exceeds this threshold.
+    pub max_xor_fraction: f32,
+    /// Promote an exact variant only when it appears at least this many times.
+    pub promote_min_freq: u32,
+    /// Fall back to generic coding if exact-match symbol reuse is weaker than
+    /// this ratio. `1.0` preserves the historical always-symbol behavior.
+    pub min_dedup_ratio: f32,
+}
+
+impl Default for RefinementGate {
+    fn default() -> Self {
+        Self {
+            min_xor_popcount: 0,
+            max_xor_fraction: 1.0,
+            promote_min_freq: u32::MAX,
+            min_dedup_ratio: 1.0,
+        }
+    }
 }
 
 impl EncoderConfig {
@@ -169,10 +204,13 @@ impl EncoderConfig {
             generic_region_duplicate_line_removal: false,
             symbol_threshold: 0.97,
             refine_after_match: false,
+            refinement_gate: RefinementGate::default(),
+            rate_select: false,
         }
     }
 
-    /// Balanced preset: Template 0, arithmetic, symbol-lossless mode, TPGD.
+    /// Balanced preset: Template 0, arithmetic, symbol-lossless mode, TPGD,
+    /// with rate selection against generic T0+TPGD for single-page streams.
     pub fn balanced() -> Self {
         Self {
             mode: Mode::SymbolLossless,
@@ -183,6 +221,8 @@ impl EncoderConfig {
             generic_region_duplicate_line_removal: true,
             symbol_threshold: 0.97,
             refine_after_match: false,
+            refinement_gate: RefinementGate::default(),
+            rate_select: true,
         }
     }
 
@@ -198,6 +238,13 @@ impl EncoderConfig {
             generic_region_duplicate_line_removal: true,
             symbol_threshold: 0.85,
             refine_after_match: true,
+            refinement_gate: RefinementGate {
+                max_xor_fraction: 0.10,
+                promote_min_freq: 3,
+                min_dedup_ratio: 0.5,
+                ..RefinementGate::default()
+            },
+            rate_select: true,
         }
     }
 
@@ -210,6 +257,16 @@ impl EncoderConfig {
                 refine_after_match: self.refinement && self.refine_after_match,
             }),
         }
+    }
+
+    fn should_rate_select(&self) -> bool {
+        self.rate_select
+            && matches!(self.coding, Coding::Arithmetic)
+            && match self.mode {
+                Mode::Generic => false,
+                Mode::SymbolLossless => true,
+                Mode::SymbolLossy => self.refinement && self.refine_after_match,
+            }
     }
 }
 
@@ -224,8 +281,12 @@ pub struct Jbig2Encoder<W: Write> {
     writer: W,
     cfg: EncoderConfig,
     mq_cxs: MqContexts,
+    mq_enc: MqEncoder,
+    mq_body: Vec<u8>,
+    segment_buf: Vec<u8>,
     seg_no: u32,
     file_header_emitted: bool,
+    stream_finalized: bool,
     pages_emitted: u32,
     total_pages: u32,
 }
@@ -237,8 +298,12 @@ impl<W: Write> Jbig2Encoder<W> {
             writer,
             cfg,
             mq_cxs: MqContexts::new(MQ_NUM_CONTEXTS),
+            mq_enc: MqEncoder::new(0),
+            mq_body: Vec::new(),
+            segment_buf: Vec::new(),
             seg_no: 0,
             file_header_emitted: false,
+            stream_finalized: false,
             pages_emitted: 0,
             total_pages: 1,
         }
@@ -316,6 +381,9 @@ impl<W: Write> Jbig2Encoder<W> {
 
     /// Encode one page bitmap.
     pub fn write_page(&mut self, bitmap: &Bitmap) -> Jbig2Result<()> {
+        if self.can_rate_select_full_stream() {
+            return self.write_rate_selected_page(bitmap);
+        }
         match self.cfg.symbol_coding() {
             Some(coding) => self.write_page_symbols(bitmap, coding),
             None => {
@@ -325,6 +393,54 @@ impl<W: Write> Jbig2Encoder<W> {
                 self.end_page(page_assoc)
             }
         }
+    }
+
+    fn can_rate_select_full_stream(&self) -> bool {
+        self.cfg.should_rate_select()
+            && !self.file_header_emitted
+            && self.pages_emitted == 0
+            && self.total_pages == 1
+    }
+
+    fn write_rate_selected_page(&mut self, bitmap: &Bitmap) -> Jbig2Result<()> {
+        let mut generic_cfg = self.cfg.clone();
+        generic_cfg.mode = Mode::Generic;
+        generic_cfg.template = GenericTemplate::T0;
+        generic_cfg.generic_region_duplicate_line_removal = true;
+        generic_cfg.refinement = false;
+        generic_cfg.refine_after_match = false;
+        generic_cfg.rate_select = false;
+
+        let mut symbol_cfg = self.cfg.clone();
+        symbol_cfg.rate_select = false;
+
+        let generic = Self::encode_page_to_vec(bitmap, generic_cfg);
+        let symbol = Self::encode_page_to_vec(bitmap, symbol_cfg);
+        let chosen = match (generic, symbol) {
+            (Ok(generic), Ok(symbol)) => {
+                if generic.len() <= symbol.len() {
+                    generic
+                } else {
+                    symbol
+                }
+            }
+            (Ok(generic), Err(_)) => generic,
+            (Err(_), Ok(symbol)) => symbol,
+            (Err(generic_err), Err(_symbol_err)) => return Err(generic_err),
+        };
+
+        self.writer.write_all(&chosen)?;
+        self.file_header_emitted = true;
+        self.stream_finalized = true;
+        self.pages_emitted = 1;
+        Ok(())
+    }
+
+    fn encode_page_to_vec(bitmap: &Bitmap, mut cfg: EncoderConfig) -> Jbig2Result<Vec<u8>> {
+        cfg.rate_select = false;
+        let mut encoder = Jbig2Encoder::new(Vec::new(), cfg);
+        encoder.write_page(bitmap)?;
+        encoder.finish()
     }
 
     /// Encode one page through the symbol-dictionary + text-region path.
@@ -461,6 +577,10 @@ impl<W: Write> Jbig2Encoder<W> {
             .cfg
             .adaptive_templates
             .unwrap_or_else(|| nominal_at(template_id, ext_template));
+        // Some external decoders expose stale row padding when TPGD copies
+        // non-byte-aligned rows. Keep TPGD to byte-aligned pages until the
+        // padding behaviour is portable across decoders.
+        let tpgdon = self.cfg.generic_region_duplicate_line_removal && (bitmap.width() & 7) == 0;
         let hdr = GenericRegionHeader {
             region: RegionInfo {
                 width: bitmap.width(),
@@ -472,7 +592,7 @@ impl<W: Write> Jbig2Encoder<W> {
             },
             mmr: matches!(self.cfg.coding, Coding::Mmr),
             template: template_id,
-            tpgdon: self.cfg.generic_region_duplicate_line_removal,
+            tpgdon,
             ext_template,
             at,
         };
@@ -482,10 +602,12 @@ impl<W: Write> Jbig2Encoder<W> {
 
         let coded = match self.cfg.coding {
             Coding::Arithmetic => {
-                let mut cxs = MqContexts::new(MQ_NUM_CONTEXTS);
-                let mut enc = MqEncoder::new(bitmap.data().len() / 4 + 16);
-                encode_generic_arith(&mut enc, &mut cxs, &hdr, bitmap)?;
-                enc.finish()
+                self.mq_cxs.reset();
+                self.mq_enc.take_output_buffer(&mut self.mq_body);
+                self.mq_enc.reset(bitmap.data().len() / 4 + 16);
+                encode_generic_arith(&mut self.mq_enc, &mut self.mq_cxs, &hdr, bitmap)?;
+                self.mq_enc.finish_into(&mut self.mq_body);
+                std::mem::take(&mut self.mq_body)
             }
             Coding::Mmr => {
                 #[cfg(feature = "mmr")]
@@ -511,7 +633,11 @@ impl<W: Write> Jbig2Encoder<W> {
                 w.write_all(&coded)?;
                 Ok(())
             },
-        )
+        )?;
+        if matches!(self.cfg.coding, Coding::Arithmetic) {
+            self.mq_body = coded;
+        }
+        Ok(())
     }
 
     fn encode_page_symbol(
@@ -531,13 +657,77 @@ impl<W: Write> Jbig2Encoder<W> {
         // Step 2: classify. For `symbol_threshold = 1.0` we only merge exact
         // duplicates; at lower thresholds the WXOR-bucketed lossy classifier
         // allows near-matches per `jbig2enc`-style fractional agreement.
-        let (symbols_raw, instance_symbol_raw) = if symbol_threshold < 1.0 {
-            let cls = classify_lossy(&comps, symbol_threshold);
-            (cls.symbols, cls.instance_symbol)
-        } else {
-            let cls = classify_identity(&comps);
-            (cls.symbols, cls.instance_symbol)
-        };
+        let (mut symbols_raw, mut instance_symbol_raw, identity_symbol_count) =
+            if symbol_threshold < 1.0 {
+                let cls = classify_lossy(&comps, symbol_threshold);
+                (cls.symbols, cls.instance_symbol, cls.identity_symbol_count)
+            } else {
+                let cls = classify_identity(&comps);
+                let identity_symbol_count = cls.symbols.len() as u32;
+                (cls.symbols, cls.instance_symbol, identity_symbol_count)
+            };
+
+        let dedup_ratio = identity_symbol_count as f32 / comps.len() as f32;
+        if dedup_ratio > self.cfg.refinement_gate.min_dedup_ratio {
+            return self.encode_page_generic(bitmap, page_assoc);
+        }
+
+        let want_refine = matches!(
+            coding,
+            SymbolCoding::Lossy {
+                refine_after_match: true,
+                ..
+            }
+        ) && self.cfg.refinement;
+        if want_refine {
+            let gate = self.cfg.refinement_gate;
+            let mut promote_always = Vec::new();
+            let mut promote_if_frequent: Vec<(u32, Bitmap, Vec<usize>)> = Vec::new();
+            for (idx, (&sym_idx, component)) in
+                instance_symbol_raw.iter().zip(comps.iter()).enumerate()
+            {
+                let dict_sym = &symbols_raw[sym_idx as usize];
+                if component.bitmap == *dict_sym {
+                    continue;
+                }
+                let stats = xor_stats(&component.bitmap, dict_sym);
+                let area = (component.bitmap.width() as u64)
+                    .saturating_mul(component.bitmap.height() as u64)
+                    .max(1) as f32;
+                let xor_fraction = stats.popcount as f32 / area;
+                if stats.popcount < gate.min_xor_popcount {
+                    promote_always.push(idx);
+                } else if xor_fraction > gate.max_xor_fraction {
+                    if let Some((_, _, indices)) =
+                        promote_if_frequent
+                            .iter_mut()
+                            .find(|(group_sym, bitmap, _)| {
+                                *group_sym == sym_idx && *bitmap == component.bitmap
+                            })
+                    {
+                        indices.push(idx);
+                    } else {
+                        promote_if_frequent.push((sym_idx, component.bitmap.clone(), vec![idx]));
+                    }
+                }
+            }
+
+            for idx in promote_always {
+                let new_idx = symbols_raw.len() as u32;
+                symbols_raw.push(comps[idx].bitmap.clone());
+                instance_symbol_raw[idx] = new_idx;
+            }
+            for (_, bitmap, indices) in promote_if_frequent {
+                if (indices.len() as u32) < gate.promote_min_freq {
+                    continue;
+                }
+                let new_idx = symbols_raw.len() as u32;
+                symbols_raw.push(bitmap);
+                for idx in indices {
+                    instance_symbol_raw[idx] = new_idx;
+                }
+            }
+        }
 
         // Step 3: sort symbols by height (ascending) so height-class
         // delta-coding is well-behaved. We keep a permutation map so each
@@ -588,18 +778,15 @@ impl<W: Write> Jbig2Encoder<W> {
         // against that representative — that recovers exact-pixel fidelity
         // even when the lossy classifier coalesced glyphs whose shapes
         // disagree by a handful of pixels.
-        let want_refine = matches!(
-            coding,
-            SymbolCoding::Lossy {
-                refine_after_match: true,
-                ..
-            }
-        ) && self.cfg.refinement;
         let mut instances: Vec<SymbolInstance> = instance_symbol_raw
             .iter()
             .zip(comps.iter())
             .map(|(&sym_idx, c)| {
                 let dict_idx = inv[sym_idx as usize];
+                debug_assert!(
+                    (dict_idx as usize) < sorted_syms.len(),
+                    "text region instance references dictionary index outside sorted symbol table"
+                );
                 let mut ins = SymbolInstance::placement(dict_idx, c.x as i32, c.y as i32);
                 if want_refine {
                     let dict_sym = &sorted_syms[dict_idx as usize];
@@ -620,13 +807,14 @@ impl<W: Write> Jbig2Encoder<W> {
         let any_refined = instances.iter().any(|i| i.refinement.is_some());
 
         // Choose a strip height of 2 rows unless the page is very short.
-        let log_sbstrips: u8 = if bitmap.height() < 4 { 0 } else { 1 };
+        let log_sbstrips: u8 = 0;
 
         let emit_text_region = |this: &mut Self,
                                 region_y: u32,
                                 region_height: u32,
                                 region_instances: &[SymbolInstance]|
          -> Jbig2Result<()> {
+            let region_refined = region_instances.iter().any(|ins| ins.refinement.is_some());
             let tr_hdr = TextRegionHeader {
                 region: RegionInfo {
                     width: bitmap.width(),
@@ -637,7 +825,7 @@ impl<W: Write> Jbig2Encoder<W> {
                     colour_extension: false,
                 },
                 sbhuff: false,
-                sbrefine: any_refined,
+                sbrefine: region_refined,
                 log_sbstrips,
                 ref_corner: RefCorner::TL,
                 transposed: false,
@@ -653,7 +841,7 @@ impl<W: Write> Jbig2Encoder<W> {
                 sbhuff_rdx: 0,
                 sbhuff_rdy: 0,
                 sbhuff_rsize: false,
-                rat: [(0, 0); 2],
+                rat: NOMINAL_REFINEMENT_AT.to_array_2(),
                 num_instances: region_instances.len() as u32,
             };
             let tr_body = encode_text_region_with_contexts(
@@ -723,6 +911,9 @@ impl<W: Write> Jbig2Encoder<W> {
                 "more pages emitted than declared",
             ));
         }
+        if self.stream_finalized {
+            return Ok(self.writer);
+        }
         // EOF segment so random-access-compatible readers terminate cleanly.
         let eof_seg = SegmentHeader {
             number: self.seg_no,
@@ -748,8 +939,8 @@ impl<W: Write> Jbig2Encoder<W> {
     where
         F: FnOnce(&mut Vec<u8>) -> Jbig2Result<()>,
     {
-        let mut body_buf = Vec::new();
-        body(&mut body_buf)?;
+        self.segment_buf.clear();
+        body(&mut self.segment_buf)?;
         let seg_hdr = SegmentHeader {
             number: self.seg_no,
             segment_type: kind,
@@ -757,11 +948,13 @@ impl<W: Write> Jbig2Encoder<W> {
             referred,
             retain_bits,
             page_association: page_assoc,
-            data_length: Some(body_buf.len() as u32),
+            data_length: Some(self.segment_buf.len() as u32),
         };
         self.seg_no += 1;
         seg_hdr.write(&mut self.writer)?;
-        self.writer.write_all(&body_buf).map_err(Jbig2Error::from)?;
+        self.writer
+            .write_all(&self.segment_buf)
+            .map_err(Jbig2Error::from)?;
         Ok(())
     }
 
@@ -780,9 +973,8 @@ impl<W: Write> Jbig2Encoder<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::segments::{FileHeader, SegmentHeader};
     use crate::Jbig2Decoder;
-    use std::io::{Cursor, Read};
+    use std::io::Cursor;
 
     fn stripe_bitmap(w: u32, h: u32) -> Bitmap {
         let mut bm = Bitmap::new(w, h).unwrap();
@@ -823,6 +1015,40 @@ mod tests {
     }
 
     #[test]
+    fn rate_selected_balanced_chooses_generic_when_smaller() {
+        let bm = stripe_bitmap(96, 96);
+        let rate_cfg = EncoderConfig::balanced();
+
+        let mut generic_cfg = rate_cfg.clone();
+        generic_cfg.mode = Mode::Generic;
+        generic_cfg.template = GenericTemplate::T0;
+        generic_cfg.generic_region_duplicate_line_removal = true;
+        generic_cfg.rate_select = false;
+
+        let mut symbol_cfg = rate_cfg.clone();
+        symbol_cfg.rate_select = false;
+
+        let generic = Jbig2Encoder::<Vec<u8>>::encode_page_to_vec(&bm, generic_cfg).unwrap();
+        let symbol = Jbig2Encoder::<Vec<u8>>::encode_page_to_vec(&bm, symbol_cfg).unwrap();
+        assert!(
+            generic.len() < symbol.len(),
+            "fixture should make generic smaller than symbol (generic={}, symbol={})",
+            generic.len(),
+            symbol.len()
+        );
+
+        let mut selected = Vec::new();
+        let mut enc = Jbig2Encoder::new(&mut selected, rate_cfg);
+        enc.write_page(&bm).unwrap();
+        enc.finish().unwrap();
+        assert_eq!(selected.len(), generic.len());
+
+        let mut dec = Jbig2Decoder::new(Cursor::new(selected)).unwrap();
+        let page = dec.decode_page(1).unwrap();
+        assert_eq!(page.bitmap, bm);
+    }
+
+    #[test]
     fn max_compression_preset_round_trip() {
         let bm = stripe_bitmap(48, 32);
         let mut buf = Vec::new();
@@ -836,7 +1062,7 @@ mod tests {
     }
 
     #[test]
-    fn max_compression_preset_refines_lossy_variants() {
+    fn max_compression_preset_recovers_lossy_variants() {
         let bm = glyph_page_with_lossy_variants();
         let mut buf = Vec::new();
         let mut enc = Jbig2Encoder::new(&mut buf, EncoderConfig::max_compression());
@@ -844,31 +1070,43 @@ mod tests {
         enc.finish().unwrap();
 
         let mut dec = Jbig2Decoder::new(Cursor::new(buf.clone())).unwrap();
-        let mut saw_refined_text = false;
-        let mut cur = Cursor::new(buf);
-        let _fh = FileHeader::read(&mut cur).unwrap();
-        loop {
-            let seg = SegmentHeader::read(&mut cur).unwrap();
-            let mut body = vec![0u8; seg.data_length.unwrap_or(0) as usize];
-            cur.read_exact(&mut body).unwrap();
-            if matches!(
-                seg.segment_type,
-                SegmentType::ImmediateLosslessTextRegion
-                    | SegmentType::ImmediateTextRegion
-                    | SegmentType::IntermediateTextRegion
-            ) {
-                let hdr = TextRegionHeader::read(&mut body.as_slice()).unwrap();
-                saw_refined_text |= hdr.sbrefine;
-            }
-            if matches!(seg.segment_type, SegmentType::EndOfFile) {
-                break;
-            }
-        }
+        let page = dec.decode_page(1).unwrap();
+        assert_eq!(page.bitmap, bm);
+    }
+
+    #[test]
+    fn rate_selected_max_chooses_generic_when_smaller() {
+        let bm = stripe_bitmap(96, 96);
+        let mut rate_cfg = EncoderConfig::max_compression();
+        rate_cfg.refinement_gate.min_dedup_ratio = 1.0;
+
+        let mut generic_cfg = rate_cfg.clone();
+        generic_cfg.mode = Mode::Generic;
+        generic_cfg.template = GenericTemplate::T0;
+        generic_cfg.refinement = false;
+        generic_cfg.refine_after_match = false;
+        generic_cfg.generic_region_duplicate_line_removal = true;
+        generic_cfg.rate_select = false;
+
+        let mut symbol_cfg = rate_cfg.clone();
+        symbol_cfg.rate_select = false;
+
+        let generic = Jbig2Encoder::<Vec<u8>>::encode_page_to_vec(&bm, generic_cfg).unwrap();
+        let symbol = Jbig2Encoder::<Vec<u8>>::encode_page_to_vec(&bm, symbol_cfg).unwrap();
         assert!(
-            saw_refined_text,
-            "max_compression should emit SBREFINE=1 when lossy matches need recovery"
+            generic.len() < symbol.len(),
+            "fixture should make generic smaller than symbol (generic={}, symbol={})",
+            generic.len(),
+            symbol.len()
         );
 
+        let mut selected = Vec::new();
+        let mut enc = Jbig2Encoder::new(&mut selected, rate_cfg);
+        enc.write_page(&bm).unwrap();
+        enc.finish().unwrap();
+        assert_eq!(selected.len(), generic.len());
+
+        let mut dec = Jbig2Decoder::new(Cursor::new(selected)).unwrap();
         let page = dec.decode_page(1).unwrap();
         assert_eq!(page.bitmap, bm);
     }
@@ -973,6 +1211,8 @@ mod tests {
             generic_region_duplicate_line_removal: false,
             symbol_threshold: 0.85,
             refine_after_match: true,
+            refinement_gate: RefinementGate::default(),
+            rate_select: false,
         };
         let mut buf = Vec::new();
         let mut enc = Jbig2Encoder::new(&mut buf, cfg);
@@ -1015,6 +1255,8 @@ mod tests {
             generic_region_duplicate_line_removal: false,
             symbol_threshold: 0.97,
             refine_after_match: false,
+            refinement_gate: RefinementGate::default(),
+            rate_select: false,
         };
         let mut buf = Vec::new();
         let mut enc = Jbig2Encoder::new(&mut buf, cfg);
