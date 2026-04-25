@@ -31,6 +31,11 @@ fn run() -> Result<(), String> {
     reset_dir(&workdir)?;
 
     let tools = Tools::resolve(&root, &workdir);
+    if args.self_check {
+        run_self_check(&workdir, &tools)?;
+        return Ok(());
+    }
+
     let mut summaries = Vec::new();
     let mut strict_failed = false;
 
@@ -124,6 +129,7 @@ struct Args {
     target: Target,
     no_color: bool,
     strict_mode: bool,
+    self_check: bool,
     write_known_issues_doc: Option<PathBuf>,
 }
 
@@ -133,6 +139,7 @@ impl Args {
         let mut target = Target::All;
         let mut no_color = false;
         let mut strict_mode = false;
+        let mut self_check = false;
         let mut write_known_issues_doc = None;
         let mut iter = std::env::args().skip(1);
         while let Some(arg) = iter.next() {
@@ -151,6 +158,7 @@ impl Args {
                 }
                 "--no-color" => no_color = true,
                 "--strict" => strict_mode = true,
+                "--self-check" => self_check = true,
                 "--write-known-issues-doc" => {
                     let value = iter
                         .next()
@@ -159,7 +167,7 @@ impl Args {
                 }
                 "-h" | "--help" => {
                     println!(
-                        "usage: conformance-matrix [--phase decode|encode|both] [--target system-binary|jbig2enc|jbig2dec|itu-t88|java|rust|all] [--no-color] [--strict] [--write-known-issues-doc PATH]"
+                        "usage: conformance-matrix [--phase decode|encode|both] [--target system-binary|jbig2enc|jbig2dec|itu-t88|java|rust|all] [--no-color] [--strict] [--self-check] [--write-known-issues-doc PATH]"
                     );
                     std::process::exit(0);
                 }
@@ -180,6 +188,7 @@ impl Args {
                 target,
                 no_color,
                 strict_mode,
+                self_check,
                 write_known_issues_doc,
             }),
         }
@@ -201,6 +210,7 @@ impl ColorMode {
         match kind {
             CellKind::Ok => format!("\x1b[32m{text}\x1b[0m"),
             CellKind::KnownIssue => format!("\x1b[33m{text}\x1b[0m"),
+            CellKind::Wontfix => format!("\x1b[1;35m{text}\x1b[0m"),
             CellKind::Resolved => format!("\x1b[36m{text}\x1b[0m"),
             CellKind::OurError => format!("\x1b[31m{text}\x1b[0m"),
             CellKind::ThirdPartyBreak => format!("\x1b[38;5;208m{text}\x1b[0m"),
@@ -219,6 +229,13 @@ struct KnownIssue {
     upstream: String,
     evidence: String,
     vendor: Option<VendorPin>,
+    /// `true` when the upstream maintainer has explicitly declined to fix
+    /// this defect (e.g. an Artifex bugzilla `RESOLVED WONTFIX`). Renders
+    /// as `WTF` instead of `KI` in the summary, and requires the `evidence`
+    /// field to cite the upstream WONTFIX record so the catalog stays
+    /// auditable.
+    #[serde(default)]
+    wontfix: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -312,6 +329,14 @@ impl KnownIssues {
                     "known-issues {entry_label}: evidence cites vendor/ but no vendor pin is present"
                 ));
             }
+            if issue.wontfix
+                && !issue.evidence.contains("http://")
+                && !issue.evidence.contains("https://")
+            {
+                return Err(format!(
+                    "known-issues {entry_label}: wontfix=true requires evidence to cite an upstream URL (e.g. a bugzilla WONTFIX record)"
+                ));
+            }
 
             let (valid_rows, valid_cols) = match issue.phase {
                 PhaseLabel::Decode => (&decode_rows, &decode_cols),
@@ -395,6 +420,12 @@ impl KnownIssues {
                 .filter(|(_, issue)| issue.phase == phase)
             {
                 doc.push_str(&format!("### `{}` / `{}`\n\n", issue.row, issue.column));
+                let category = if issue.wontfix {
+                    "WTF (upstream WONTFIX)"
+                } else {
+                    "KI (known issue)"
+                };
+                doc.push_str(&format!("- Category: {}\n", category));
                 doc.push_str(&format!("- Expected: `{}`\n", issue.expect.describe()));
                 doc.push_str(&format!("- Upstream: {}\n", issue.upstream));
                 doc.push_str(&format!("- Evidence: {}\n", issue.evidence));
@@ -600,6 +631,7 @@ fn run_decode_matrix(
     target: Target,
 ) -> Result<Matrix, String> {
     let vectors = decode_vectors(root);
+    validate_decode_oracles(root, &vectors)?;
     let rows = decode_rows(target);
     let mut oracle_cache = OracleCache::default();
     let mut matrix_rows = Vec::new();
@@ -935,6 +967,33 @@ fn tt(label: &'static str, jb2: &'static str, bmp: &'static str, root: &Path) ->
     }
 }
 
+fn oracle_file_path(root: &Path, kind: &OracleKind, name: &str) -> PathBuf {
+    match kind {
+        OracleKind::Files(_) => conformance_dir(root).join(name),
+        OracleKind::SpecFiles(_) => t88_spec_dir().join(name),
+    }
+}
+
+fn validate_decode_oracles(root: &Path, vectors: &[DecodeVector]) -> Result<(), String> {
+    for vector in vectors {
+        let files = match &vector.oracle {
+            OracleKind::Files(files) | OracleKind::SpecFiles(files) => files,
+        };
+        for name in files {
+            let path = oracle_file_path(root, &vector.oracle, name);
+            if !path.is_file() {
+                eprintln!(
+                    "conformance-matrix: missing decode oracle {}",
+                    path.display()
+                );
+                return Err(format!("missing decode oracle {}", path.display()));
+            }
+            validate_bmp_1bpp_fingerprint(&path)?;
+        }
+    }
+    Ok(())
+}
+
 #[derive(Clone)]
 struct EncodeSource {
     label: &'static str,
@@ -989,9 +1048,18 @@ impl OracleCache {
                 let pages = files
                     .iter()
                     .map(|name| {
-                        load_bmp_image(
-                            &conformance_dir(Path::new(env!("CARGO_MANIFEST_DIR"))).join(name),
-                        )
+                        let path = oracle_file_path(
+                            Path::new(env!("CARGO_MANIFEST_DIR")),
+                            &vector.oracle,
+                            name,
+                        );
+                        if !path.is_file() {
+                            eprintln!(
+                                "conformance-matrix: missing decode oracle {}",
+                                path.display()
+                            );
+                        }
+                        load_bmp_image(&path)
                     })
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(Some(Box::leak(pages.into_boxed_slice())))
@@ -999,12 +1067,81 @@ impl OracleCache {
             OracleKind::SpecFiles(files) => {
                 let pages = files
                     .iter()
-                    .map(|name| load_bmp_image(&t88_spec_dir().join(name)))
+                    .map(|name| {
+                        let path = oracle_file_path(
+                            Path::new(env!("CARGO_MANIFEST_DIR")),
+                            &vector.oracle,
+                            name,
+                        );
+                        if !path.is_file() {
+                            eprintln!(
+                                "conformance-matrix: missing decode oracle {}",
+                                path.display()
+                            );
+                        }
+                        load_bmp_image(&path)
+                    })
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(Some(Box::leak(pages.into_boxed_slice())))
             }
         }
     }
+}
+
+fn run_self_check(workdir: &Path, tools: &Tools) -> Result<(), String> {
+    let source = synthetic_self_check_bitmap()?;
+    let mut bytes = Vec::new();
+    let mut encoder = Jbig2Encoder::new(&mut bytes, EncoderConfig::fast());
+    encoder
+        .write_page(&source)
+        .map_err(|err| format!("self-check encode page: {err}"))?;
+    encoder
+        .finish()
+        .map_err(|err| format!("self-check finish: {err}"))?;
+
+    let input = workdir.join("self-check.jb2");
+    fs::write(&input, &bytes).map_err(|err| format!("write {input:?}: {err}"))?;
+
+    let rust_pages = decode_with_rust(&input, 1)?;
+    compare_page(
+        rust_pages
+            .first()
+            .ok_or_else(|| "rust self-check produced no pages".to_string())?,
+        &PageImage::Mono(source.clone()),
+    )
+    .map_err(|err| format!("rust self-check mismatch: {err}"))?;
+
+    if let Some(bin) = tools
+        .vendor_jbig2dec
+        .as_deref()
+        .or(tools.system_jbig2dec.as_deref())
+    {
+        let pages = decode_with_jbig2dec_bin(bin, &input, &workdir.join("self-check.pbm"))?;
+        compare_page(
+            pages
+                .first()
+                .ok_or_else(|| "jbig2dec self-check produced no pages".to_string())?,
+            &PageImage::Mono(source),
+        )
+        .map_err(|err| format!("jbig2dec self-check mismatch: {err}"))?;
+        println!("SELF-CHECK: rust and jbig2dec decoders matched synthetic page");
+    } else {
+        println!("SELF-CHECK: rust decoder matched synthetic page; jbig2dec unavailable");
+    }
+
+    Ok(())
+}
+
+fn synthetic_self_check_bitmap() -> Result<Bitmap, String> {
+    let mut bm = Bitmap::new(64, 32).map_err(|err| err.to_string())?;
+    for y in 0..32 {
+        for x in 0..64 {
+            if (x + y) % 11 == 0 || (x >= 7 && x < 25 && y >= 9 && y < 18) {
+                bm.set_pixel(x, y, 1);
+            }
+        }
+    }
+    Ok(bm)
 }
 
 enum DecodeAttempt {
@@ -1059,19 +1196,23 @@ fn decode_with(
             .unwrap_or_else(DecodeAttempt::Fail)
         }
         DecodeKind::Java => {
-            if expected_pages != 1 {
-                return DecodeAttempt::Skip("multi-page unsupported");
-            }
             let Some(cmd) = tools.java_cmd.as_deref() else {
                 return DecodeAttempt::Skip("no binary");
             };
-            decode_with_java(
+            match decode_with_java(
                 cmd,
                 &vector.path,
                 &workdir.join(format!("{}-java.pbm", vector.label)),
-            )
-            .map(|page| DecodeAttempt::Pages(vec![PageImage::Mono(page)]))
-            .unwrap_or_else(DecodeAttempt::Fail)
+            ) {
+                Ok(pages) => {
+                    if !vector.compare_prefix && pages.len() != expected_pages {
+                        DecodeAttempt::Skip("page count mismatch")
+                    } else {
+                        DecodeAttempt::Pages(pages.into_iter().map(PageImage::Mono).collect())
+                    }
+                }
+                Err(err) => DecodeAttempt::Fail(err),
+            }
         }
         DecodeKind::Rust => decode_with_rust(&vector.path, expected_pages)
             .map(DecodeAttempt::Pages)
@@ -1295,19 +1436,29 @@ fn decode_with_jbig2dec_bin(
     output: &Path,
 ) -> Result<Vec<PageImage>, String> {
     let mut cmd = Command::new(bin);
-    cmd.arg("-q")
-        .arg("--format")
+    cmd.arg("--format")
         .arg("pbm")
         .arg("-o")
         .arg(output)
         .arg(input)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    run_output(cmd, "jbig2dec decode")?;
+    let out = run_output(cmd, "jbig2dec decode")?;
+    let diagnostics = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    if diagnostics.contains("FATAL ERROR") || diagnostics.contains("failed to decode") {
+        return Err(format!(
+            "jbig2dec diagnostics: {}",
+            diagnostics.split_whitespace().collect::<Vec<_>>().join(" ")
+        ));
+    }
     parse_pbm_sequence(output).map(|pages| pages.into_iter().map(PageImage::Mono).collect())
 }
 
-fn decode_with_java(cmd: &[OsString], input: &Path, output: &Path) -> Result<Bitmap, String> {
+fn decode_with_java(cmd: &[OsString], input: &Path, output: &Path) -> Result<Vec<Bitmap>, String> {
     let Some(program) = cmd.first() else {
         return Err("empty java command".to_string());
     };
@@ -1319,7 +1470,7 @@ fn decode_with_java(cmd: &[OsString], input: &Path, output: &Path) -> Result<Bit
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     run_output(command, "jbig2-imageio decode")?;
-    load_pbm_p4(output)
+    parse_pbm_sequence(output)
 }
 
 fn decode_with_t88(
@@ -1490,6 +1641,33 @@ fn load_bmp_image(path: &Path) -> Result<PageImage, String> {
     }
 }
 
+fn validate_bmp_1bpp_fingerprint(path: &Path) -> Result<(), String> {
+    let data = fs::read(path).map_err(|err| format!("read {path:?}: {err}"))?;
+    if data.len() < 62 || &data[0..2] != b"BM" {
+        return Err(format!("{path:?}: not a BMP"));
+    }
+    let bpp = u16::from_le_bytes(data[28..30].try_into().unwrap());
+    if bpp != 1 {
+        return Ok(());
+    }
+    let pal0 = &data[54..58];
+    let pal1 = &data[58..62];
+    if pal0 != [0xff, 0xff, 0xff, 0x00].as_slice() || pal1 != [0x00, 0x00, 0x00, 0x00].as_slice() {
+        return Err(format!(
+            "{path:?}: unexpected 1-bpp BMP palette pal0={:02x?} pal1={:02x?}",
+            pal0, pal1
+        ));
+    }
+    let bm = parse_bmp_1bpp(&data)?;
+    let top_left_is_ink = bm.row(0)[0] & 0x80 != 0;
+    if top_left_is_ink {
+        return Err(format!(
+            "{path:?}: unexpected black sentinel pixel at (0,0); oracle polarity may have drifted"
+        ));
+    }
+    Ok(())
+}
+
 fn parse_bmp_1bpp(data: &[u8]) -> Result<Bitmap, String> {
     let pixel_offset = u32::from_le_bytes(data[10..14].try_into().unwrap()) as usize;
     let dib_size = u32::from_le_bytes(data[14..18].try_into().unwrap()) as usize;
@@ -1554,14 +1732,6 @@ fn parse_bmp_24bpp(data: &[u8]) -> Result<RgbBitmap, String> {
         }
     }
     Ok(bm)
-}
-
-fn load_pbm_p4(path: &Path) -> Result<Bitmap, String> {
-    let pages = parse_pbm_sequence(path)?;
-    pages
-        .into_iter()
-        .next()
-        .ok_or_else(|| format!("{path:?}: no PBM pages"))
 }
 
 fn parse_pbm_sequence(path: &Path) -> Result<Vec<Bitmap>, String> {
@@ -1710,6 +1880,7 @@ enum CellKind {
     Ok,
     Lossy,
     KnownIssue,
+    Wontfix,
     Resolved,
     OurError,
     ThirdPartyBreak,
@@ -1851,6 +2022,7 @@ struct PhaseRenderStats {
     phase: &'static str,
     ok: usize,
     known_issue: usize,
+    wontfix: usize,
     err: usize,
     brkn: usize,
     skipped: usize,
@@ -1866,10 +2038,11 @@ impl PhaseRenderStats {
 
     fn summary_text(&self) -> String {
         format!(
-            "{} {} ok, {} ki, {} err, {} brkn, {} skip, {} blank, {} resolved, {} drifted",
+            "{} {} ok, {} ki, {} wtf, {} err, {} brkn, {} skip, {} blank, {} resolved, {} drifted",
             self.phase,
             self.ok,
             self.known_issue,
+            self.wontfix,
             self.err,
             self.brkn,
             self.skipped,
@@ -1899,6 +2072,7 @@ fn classify_matrix(matrix: &Matrix, known_issues: &KnownIssues) -> ClassifiedMat
             match classified.token {
                 "OK" => stats.ok += 1,
                 "KI" => stats.known_issue += 1,
+                "WTF" => stats.wontfix += 1,
                 "ERR" => stats.err += 1,
                 "BRKN" => stats.brkn += 1,
                 "SKIP" => stats.skipped += 1,
@@ -1969,9 +2143,16 @@ fn classify_cell(cell: &Cell, issue: Option<&KnownIssue>) -> ClassifiedCell {
         CellKind::OurError | CellKind::ThirdPartyBreak => {
             if let Some(issue) = issue {
                 if issue.matches(cell) {
-                    ClassifiedCell {
-                        token: "KI",
-                        kind: CellKind::KnownIssue,
+                    if issue.wontfix {
+                        ClassifiedCell {
+                            token: "WTF",
+                            kind: CellKind::Wontfix,
+                        }
+                    } else {
+                        ClassifiedCell {
+                            token: "KI",
+                            kind: CellKind::KnownIssue,
+                        }
                     }
                 } else {
                     ClassifiedCell {
@@ -1993,7 +2174,9 @@ fn classify_cell(cell: &Cell, issue: Option<&KnownIssue>) -> ClassifiedCell {
                 }
             }
         }
-        CellKind::KnownIssue | CellKind::Resolved => unreachable!("cells are classified once"),
+        CellKind::KnownIssue | CellKind::Wontfix | CellKind::Resolved => {
+            unreachable!("cells are classified once")
+        }
     }
 }
 
@@ -2002,6 +2185,30 @@ fn reset_dir(path: &Path) -> Result<(), String> {
         fs::remove_dir_all(path).map_err(|err| format!("remove {path:?}: {err}"))?;
     }
     fs::create_dir_all(path).map_err(|err| format!("create {path:?}: {err}"))
+}
+
+fn setup_output(mut cmd: Command, label: &str) -> Option<String> {
+    match cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).output() {
+        Ok(out) if out.status.success() => None,
+        Ok(out) => Some(format!(
+            "{label}: exited {}: {}",
+            out.status,
+            flatten_msg(&format!(
+                "{} {}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            ))
+        )),
+        Err(err) => Some(format!("{label}: spawn failed: {err}")),
+    }
+}
+
+fn report_setup_failure(tool: &str, err: Option<String>) {
+    if let Some(err) = err {
+        eprintln!("conformance-matrix: failed to build {tool}: {err}");
+    } else {
+        eprintln!("conformance-matrix: failed to resolve {tool}");
+    }
 }
 
 fn system_jbig2enc_bin() -> Option<PathBuf> {
@@ -2037,22 +2244,27 @@ fn vendor_jbig2enc_bin(root: &Path) -> Option<PathBuf> {
     if let Some(found) = candidates.iter().find(|path| path.is_file()) {
         return Some(found.clone());
     }
-    let _ = Command::new("./autogen.sh")
-        .current_dir(&dir)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-    let _ = Command::new("./configure")
-        .current_dir(&dir)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-    let _ = Command::new("make")
-        .current_dir(&dir)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-    candidates.into_iter().find(|path| path.is_file())
+    let mut last_error = None;
+    let mut autogen = Command::new("./autogen.sh");
+    autogen.current_dir(&dir);
+    if let Some(err) = setup_output(autogen, "jbig2enc autogen") {
+        last_error = Some(err);
+    }
+    let mut configure = Command::new("./configure");
+    configure.current_dir(&dir);
+    if let Some(err) = setup_output(configure, "jbig2enc configure") {
+        last_error = Some(err);
+    }
+    let mut make = Command::new("make");
+    make.current_dir(&dir);
+    if let Some(err) = setup_output(make, "jbig2enc make") {
+        last_error = Some(err);
+    }
+    let found = candidates.into_iter().find(|path| path.is_file());
+    if found.is_none() {
+        report_setup_failure("jbig2enc", last_error);
+    }
+    found
 }
 
 fn vendor_jbig2dec_bin(root: &Path) -> Option<PathBuf> {
@@ -2061,24 +2273,28 @@ fn vendor_jbig2dec_bin(root: &Path) -> Option<PathBuf> {
     if bin.is_file() {
         return Some(bin);
     }
-    let _ = Command::new("make")
-        .arg("-f")
-        .arg("Makefile.unix")
-        .current_dir(&dir)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+    let mut last_error = None;
+    let mut make = Command::new("make");
+    make.arg("-f").arg("Makefile.unix").current_dir(&dir);
+    if let Some(err) = setup_output(make, "jbig2dec make") {
+        last_error = Some(err);
+    }
     if !bin.is_file() && Path::new("/opt/homebrew/include/png.h").is_file() {
-        let _ = Command::new("make")
-            .arg("-f")
+        let mut make = Command::new("make");
+        make.arg("-f")
             .arg("Makefile.unix")
             .arg("CC=cc -I/opt/homebrew/include -L/opt/homebrew/lib")
-            .current_dir(&dir)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
+            .current_dir(&dir);
+        if let Some(err) = setup_output(make, "jbig2dec make homebrew") {
+            last_error = Some(err);
+        }
     }
-    bin.is_file().then_some(bin)
+    if bin.is_file() {
+        Some(bin)
+    } else {
+        report_setup_failure("jbig2dec", last_error);
+        None
+    }
 }
 
 fn t88_tools(root: &Path) -> Option<T88Tools> {
@@ -2090,16 +2306,20 @@ fn t88_tools(root: &Path) -> Option<T88Tools> {
     let source = dir.join("source");
     let jbig2 = source.join("jbig2");
     let imgcomp = source.join("imgcomp");
+    let mut build_error = None;
     if !(jbig2.is_file() && imgcomp.is_file()) {
-        let _ = Command::new("make")
-            .arg("jbig2")
-            .arg("imgcomp")
-            .current_dir(&dir)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
+        let mut make = Command::new("make");
+        make.arg("jbig2").arg("imgcomp").current_dir(&dir);
+        if let Some(err) = setup_output(make, "itu-t88 make") {
+            build_error = Some(err);
+        }
     }
-    (jbig2.is_file() && imgcomp.is_file()).then_some(T88Tools { jbig2, imgcomp })
+    if jbig2.is_file() && imgcomp.is_file() {
+        Some(T88Tools { jbig2, imgcomp })
+    } else {
+        report_setup_failure("itu-t88", build_error);
+        None
+    }
 }
 
 fn t88_test_dir() -> PathBuf {

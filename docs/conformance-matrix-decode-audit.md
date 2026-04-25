@@ -29,12 +29,12 @@ The decode workflow is straightforward:
 3. It compares the decoded pixels against a per-vector reference bitmap.
 
 The oracle for the decode phase is a **set of BMP files** (one per page)
-that ship with the T.88 conformance package, plus a `jbig2dec`-derived PBM
-oracle for the Artifex `annex-h` vector. These oracles are static, direct,
-and independent of any running decoder. That is the key asymmetry with the
-encode phase: in decode, the oracle is just a pile of bytes on disk, not
-another implementation we have to trust. When a decoder disagrees with the
-oracle, we know exactly what the right answer was supposed to be.
+that ship with the T.88 conformance package, plus spec-derived BMP files for
+the Artifex `annex-h` vector. These oracles are static, direct, and
+independent of any running decoder. That is the key asymmetry with the encode
+phase: in decode, the oracle is just a pile of bytes on disk, not another
+implementation we have to trust. When a decoder disagrees with the oracle, we
+know exactly what the right answer was supposed to be.
 
 A green `OK` cell here proves "this decoder reads this stream and produces
 the spec-defined pixels." A failure cell proves "this decoder either crashes
@@ -51,7 +51,7 @@ The decode-specific short form:
 
 1. **Inventory.** Record row, column, decoder command path, oracle BMP path,
    tool version or vendor SHA, and rendered state
-   (`OK`, `KI`, `BRKN`, `ERR`, `SKIP`, blank, `OK*`, `ERR!`; see 2.1).
+   (`OK`, `KI`, `WTF`, `BRKN`, `ERR`, `SKIP`, blank, `OK*`, `ERR!`; see 2.1).
 2. **Validate the signal.** Confirm the cell actually compared decoded pixels
    to the oracle, not just "the decoder exited 0."
 3. **Identify the JBIG2 feature under test.** Generic region, symbol
@@ -76,6 +76,14 @@ The buckets, framed for decode:
   failing decoder is not in any realistic consumer path for our library.
   Cell renders as `BRKN`. Useful as a third-party-quality signal; not
   catalogued as KI.
+- **Bucket 1a - upstream Won't Fix.** A specialization of bucket 1: the
+  third-party decoder fails *and* the upstream maintainer has explicitly
+  declined to fix the defect (the canonical case here is a Ghostscript /
+  Artifex bugzilla closed `RESOLVED WONTFIX`). Cataloging this as `WTF`
+  with the bug URL in `evidence` keeps the matrix honest by attributing
+  the persistent red cell to a maintenance posture rather than to
+  unspecified breakage. Use `WTF` only when there is a clickable upstream
+  citation; otherwise the cell stays `BRKN`.
 - **Bucket 2 - third-party decoder broken, interop matters.** A non-Rust
   decoder fails on a stream consumers will plausibly hand to `jbig2dec`,
   Java, or another decoder downstream. Cell renders as `KI` once cataloged;
@@ -93,16 +101,27 @@ The summary table uses these states. The detailed per-cell line above the
 summary always shows the underlying decoder message; the summary token is
 just the rolled-up classification.
 
-| Token  | Color  | Meaning                                                                  |
-|--------|--------|--------------------------------------------------------------------------|
-| `OK`   | green  | Decoder produced the oracle pixels.                                      |
-| `KI`   | yellow | Cataloged third-party known issue (matches `tools/conformance/known-issues.ron`). |
-| `BRKN` | orange | Third-party decoder broke on this cell; not (yet) a cataloged KI.        |
-| `ERR`  | red    | `jbig2-rust` (or the harness) failed; ours to fix.                       |
-| `SKIP` | gray   | Meaningful cell, but the decoder/feature could not be invoked (missing tool, multi-page on a single-page wrapper, etc.). |
-| blank  | -      | No meaningful cell exists for this row/column (no oracle, structurally not applicable). |
-| `OK*`  | cyan   | Cataloged KI unexpectedly passed; review the catalog.                    |
-| `ERR!` | red    | Cataloged KI failed differently than expected (drift); review.           |
+| Token  | Color         | Meaning                                                                  |
+|--------|---------------|--------------------------------------------------------------------------|
+| `OK`   | green         | Decoder produced the oracle pixels.                                      |
+| `KI`   | yellow        | Cataloged third-party known issue (matches `tools/conformance/known-issues.ron`). |
+| `WTF`  | bold magenta  | Won't Fix: cataloged third-party defect that the upstream maintainer has explicitly declined to fix (e.g. a Ghostscript/Artifex bugzilla `RESOLVED WONTFIX`). Strictly stronger than `BRKN`/`KI`: it requires both that the failure pattern matches the catalog *and* that `evidence` cites an upstream WONTFIX URL. |
+| `BRKN` | orange        | Third-party decoder broke on this cell; not (yet) a cataloged KI or WTF. |
+| `ERR`  | red           | `jbig2-rust` (or the harness) failed; ours to fix.                       |
+| `SKIP` | gray          | Meaningful cell, but the decoder/feature could not be invoked (missing tool, unsupported adapter mode, etc.). |
+| blank  | -             | No meaningful cell exists for this row/column (no oracle, structurally not applicable). |
+| `OK*`  | cyan          | Cataloged KI/WTF unexpectedly passed; review the catalog.                |
+| `ERR!` | red           | Cataloged KI/WTF failed differently than expected (drift); review.       |
+
+**`KI` vs `WTF`.** `KI` says "we have triaged this and chosen to live with
+it"; `WTF` says "the upstream maintainer has triaged it and chosen *not to
+fix it*." Mechanically, both are produced by the same matcher in
+`tools/conformance/known-issues.ron`; the difference is the `wontfix: true`
+flag on the catalog entry, which the validator only accepts when `evidence`
+contains an `http(s)://` link to an upstream WONTFIX record (or equivalent
+maintainer statement of declined-to-fix). The intent is that `WTF` is never
+a soft signal: every `WTF` cell must be backed by a citation a future
+contributor can click on.
 
 Throughout this document, when a cell is classified as a known third-party
 defect, the upstream evidence is cited inline and is mirrored in
@@ -114,9 +133,8 @@ defect, the upstream evidence is cited inline and is mirrored in
 `annex-h.jbig2` vector vendored from Artifex. The TT vectors come from
 `vendor/T-REC-T.88-201808/Software/JBIG2_ConformanceData-A20180829/`; each TT
 vector has a per-page BMP oracle (`<vector>_TT00.bmp`, `_TT01.bmp`, ...) that
-acts as the spec-defined ground truth. `annex-h.jbig2` does not ship a BMP
-oracle, so the harness uses `jbig2dec`'s output as the oracle for that column
-only.
+acts as the spec-defined ground truth. `annex-h.jbig2` uses the spec-folder
+BMP oracle generated from Figure H.1 rather than live decoder output.
 
 **Rows.**
 
@@ -140,7 +158,7 @@ is load-bearing and intentional.
 ```mermaid
 flowchart TD
     tt["TT1-TT10 .jb2 vectors"] --> expected["T.88 BMP page oracles"]
-    annex["annex-h.jbig2"] --> annexOracle["jbig2dec-derived PBM oracle"]
+    annex["annex-h.jbig2"] --> annexOracle["spec-derived Annex H BMP oracle"]
 
     tt --> sysDec["system-binary jbig2dec"]
     tt --> vendDec["vendored jbig2dec"]
@@ -162,7 +180,7 @@ flowchart TD
 
     expected --> compare
     annexOracle --> compare
-    compare --> decodeCell["Decode matrix cell: OK / KI / BRKN / ERR / SKIP / blank"]
+    compare --> decodeCell["Decode matrix cell: OK / KI / WTF / BRKN / ERR / SKIP / blank"]
 ```
 
 ## 4. Decode matrix, cell by cell
@@ -171,19 +189,21 @@ The current rendered state, copied verbatim from the harness:
 
 ```
                  TT1  TT2  TT3  TT4  TT5  TT6  TT7  TT8  TT9  TT10  annex-h
-  system-binary  BRKN BRKN BRKN BRKN BRKN BRKN BRKN  KI    OK    OK       OK
-  jbig2dec       BRKN BRKN BRKN BRKN BRKN BRKN BRKN  KI    OK    OK       OK
+  system-binary  BRKN BRKN BRKN BRKN  WTF  WTF BRKN  KI    OK    OK       OK
+  jbig2dec       BRKN BRKN BRKN BRKN  WTF  WTF BRKN  KI    OK    OK       OK
   itu-t88          OK   OK   OK   OK   OK   OK   OK  OK    OK    OK     BRKN
-  java           SKIP BRKN BRKN BRKN BRKN BRKN BRKN BRKN   OK    OK     SKIP
+  java           BRKN BRKN BRKN BRKN BRKN BRKN BRKN BRKN   OK    OK       OK
   rust            ERR   OK   OK   OK  ERR   OK   OK  OK    OK    OK      ERR
 ```
 
 `OK` means the decoder produced the oracle pixels. `BRKN` is a third-party
-decoder breakage we have not (yet) cataloged as a known issue. `KI` is a
-cataloged known issue. `ERR` is `jbig2-rust` (or the harness) failing on
-its own. `SKIP` means the decoder's wrapper could not run that cell at all
-(today: the Java adapter only handles single-page streams). See the legend
-in 2.1.
+decoder breakage we have not (yet) cataloged. `KI` is a cataloged known
+issue we are choosing to live with. `WTF` is a cataloged third-party defect
+that the upstream maintainer has explicitly closed `RESOLVED WONTFIX` (or
+equivalent) - mechanically the same matcher as `KI`, but with a stronger
+attribution. `ERR` is `jbig2-rust` (or the harness) failing on its own.
+`SKIP` means the decoder's wrapper could not run that cell at all. See the
+legend in 2.1.
 
 ### 4.1 The ITU reference row is the ground truth
 
@@ -201,38 +221,58 @@ is green on TT1-TT10, we trust the BMP oracles for every other row.
 **Classification:** Meaningful coverage for TT1-TT10. The `annex-h` cell is
 discussed in section 4.5.
 
-### 4.2 The two `jbig2dec` rows agree, and they fail in three distinct ways
+### 4.2 The two `jbig2dec` rows agree, and stderr failures are now honest
 
 `system-binary` and `jbig2dec` produce identical pixel output for every
 column. That is the redundancy paying off: the system Homebrew build and the
 vendored submodule build of `jbig2dec` agree on these vectors. The two rows
 exist to detect the day when they stop agreeing.
 
-Within those identical results, there are three groups of failures.
+Within those identical results, there are three groups of failures. The
+harness now preserves `jbig2dec` stderr diagnostics, so fatal upstream decode
+errors render as `FAIL(...)` instead of misleading row mismatches when
+`jbig2dec` exits 0 after writing a partial PBM.
 
-**TT1, TT3, TT4: arithmetic symbol-dictionary mismatches.** These vectors all
-exercise the arithmetic-coded text region path with a symbol dictionary, and
-they all show the same shape of mismatch (first-row pixel disagreement, with
-the rest of the page partially intact). Tracing through `vendor/jbig2dec`,
-these are reproductions of an unresolved arithmetic decode discrepancy in
-`jbig2dec`. The ITU reference and `jbig2-rust` agree against `jbig2dec`.
+**TT1, TT3, TT4, TT7: pixel mismatches after nominal decode.** TT1, TT3, and
+TT4 all show first-row pixel disagreement; TT7 disagrees at row 0. These
+remain real pixel comparisons, not setup failures. The ITU reference decoder
+passes all four TT vectors, while `jbig2dec` is the outlier in the
+cross-decoder comparison. `rust / TT1` is still a separate product bug, so TT1
+is not evidence that Rust agrees with the oracle yet.
 
-**TT2, TT5, TT6, TT7: distinct upstream defects.** Each of these triggers a
-different fatal-error path inside `jbig2dec`:
+**TT2, TT5, TT6: fatal upstream decode diagnostics.** Each of these prints a
+stable `jbig2dec` diagnostic that the harness now reports directly:
 
-- **TT2** prints `MMR Huffman decode error: zeroes code in MMR-coded data` -
-  `jbig2dec`'s MMR coding path miscounts a code at the start of a run. The
-  output PBM is mostly blank because the coder gives up early.
-- **TT5** prints `RefAGG refinement error` - `jbig2dec`'s refinement-aggregate
-  symbol-dictionary code path rejects a valid construct.
-- **TT6** prints `Text region with symbol refinement` - `jbig2dec` does not
-  fully implement text regions whose symbols are themselves refined inline.
-- **TT7** prints diagnostics about `AMD2` / extended template - `jbig2dec`'s
-  extended-template generic-region path misbehaves.
+- **TT2** prints `FATAL ERROR zeroes code in MMR-coded data` - `jbig2dec`'s
+  MMR Huffman path miscounts a code at the start of a run. The output PBM
+  is mostly blank because the coder gives up early. We have not found an
+  upstream record explicitly declining to fix this; an active, currently
+  unconfirmed report covers a related MMR memory-safety bug
+  (https://bugs.ghostscript.com/show_bug.cgi?id=709207, "jbig2dec:
+  heap-buffer-overflow read + signed integer overflow in jbig2_mmr.c").
+  Until upstream takes a position, this stays in `BRKN`, not `WTF`.
+- **TT5** prints `FATAL ERROR refinement references unknown symbol 0`
+  (preceded by the giveaway warning `exporting more symbols than available
+  (4294967280 > 2), capping`). `jbig2dec`'s refinement-aggregate
+  symbol-dictionary path drops the symbols it just decoded when
+  `REFAGGNINST > 1`, so the next refinement reference resolves to symbol id
+  0 and the decoder bails. Artifex closed this report
+  `RESOLVED WONTFIX` in 2017 and the defect has remained in shipping
+  releases ever since (https://bugs.ghostscript.com/show_bug.cgi?id=695737,
+  "jbig2_decode_symbol_dict: newly decoded symbols missing in dictionary
+  used for REFAGGNINST > 1 decoding"). Cell renders as `WTF` on both rows.
+- **TT6** prints `FATAL ERROR OOB obtained when decoding symbol instance
+  refinement data`, reached through a text region with symbol refinement.
+  This is the same upstream defect as TT5, exposed via the text-region
+  path (see Bug 695737, plus the related symbol/text-region tickets
+  https://bugs.ghostscript.com/show_bug.cgi?id=695736 and
+  https://bugs.ghostscript.com/show_bug.cgi?id=695741, both also closed
+  `WONTFIX`). Cell renders as `WTF` on both rows.
 
 In each case the ITU reference decoder agrees pixel-for-pixel with the BMP
-oracle, and `jbig2-rust` also agrees with the BMP oracle (these vectors are
-green in the `rust` row). So `jbig2dec` is the outlier under triangulation.
+oracle, and `jbig2-rust` also agrees with the BMP oracle. So `jbig2dec` is the
+outlier under triangulation, and for TT5/TT6 the outlier is "outlier by
+upstream policy."
 
 **TT8: known limitation, already a strict KI.** `jbig2dec` does not implement
 AMD3 colour-palette page segments and prints
@@ -250,23 +290,33 @@ the parts of the standard `jbig2dec` actually implements correctly.
 - TT8 (both rows): Bucket 2 KI - documented upstream NYI; the cell is real
   evidence that consumers using `jbig2dec` for color streams will be unable
   to decode them, which matters for our interop story. Already cataloged.
-- TT1, TT3, TT4 (both rows): Bucket 1 - reproducible upstream defect, but our
+- TT5, TT6 (both rows): Bucket 1a `WTF` - upstream Won't Fix.
+  Bug 695737 (and the companion tickets 695736 / 695741) was closed
+  `RESOLVED WONTFIX` by Artifex; the defect manifests on every shipping
+  `jbig2dec` we test against. Cataloging as `WTF` rather than `BRKN`
+  attributes the persistent red cell to maintainer policy and pins the
+  bugzilla URL in `tools/conformance/known-issues.ron` so the citation
+  cannot quietly rot.
+- TT1, TT3, TT4, TT7 (both rows): Bucket 1 - reproducible upstream defect, but our
   encoder does not emit these specific text-region constructs by default and
   no realistic consumer pipeline depends on `jbig2dec` decoding the ITU
   conformance vectors specifically. Not a release blocker. Worth keeping in
   the matrix as a third-party-quality signal and as a regression detector for
   any future `jbig2dec` upgrade.
-- TT2, TT5, TT6, TT7 (both rows): Bucket 1 by the same reasoning. Each one
-  is a separate upstream defect. They do not collapse into a single KI entry,
-  because the strict bar for KI requires a single diagnosed upstream cause
-  with a stable failure mode, and we would need to pin one evidence string
-  per defect.
+- TT2 (both rows): Bucket 1 - reproducible upstream defect. We have not yet
+  found an explicit upstream WONTFIX statement attached to this exact
+  diagnostic, only a closely related currently-unconfirmed report
+  (Bug 709207). Stays `BRKN` until we have either a citation worth the
+  upgrade to `WTF` or evidence that upstream will fix it.
 
-We deliberately do not catalog TT1-TT7 jbig2dec failures as KIs. The strict
-bar for KI requires that the failure be in code we cannot fix and that its
-absence would be a meaningful interop signal. Here, the failures are noise
-from third-party decoders on contrived spec vectors, not consumer-facing
-breakages.
+We deliberately do not catalog TT1-TT4 / TT7 jbig2dec failures as KIs. The
+strict bar for KI requires that the failure be in code we cannot fix and
+that its absence would be a meaningful interop signal. Here, the failures
+are noise from third-party decoders on contrived spec vectors, not
+consumer-facing breakages. TT5/TT6 *do* clear a different bar - the `WTF`
+bar - because we have direct upstream evidence that the failures will
+persist indefinitely, and that fact is itself worth surfacing in the
+matrix.
 
 ### 4.3 The `rust` row: three real product bugs to investigate
 
@@ -316,26 +366,26 @@ pipelines, so this is interop-critical, not just a spec compliance issue.
 
 ### 4.4 The `java` row is real cross-decoder evidence
 
-The Java decoder row resolves through `JBIG2_IMAGEIO_CMD`. `TT1` and
-`annex-h` render as `SKIP` because the configured wrapper decodes only the
-first page, and both streams are multi-page. The `SKIP` is a deliberate
-adapter limitation, not an unconfigured-tool condition.
+The Java decoder row resolves through `JBIG2_IMAGEIO_CMD`. When the
+configured wrapper only decodes the first page, multi-page streams render
+as `SKIP` as a deliberate adapter limitation, not an unconfigured-tool
+condition.
 
-`TT9` and `TT10` pass, so the Java path is not a dead harness path. `TT2`
-through `TT8` all fail inside `org.apache.pdfbox.jbig2.segments.TextRegion`
+`TT9`, `TT10`, and `annex-h` pass, so the Java path is not a dead harness
+path and now provides independent positive evidence for the spec-derived Annex
+H oracle. `TT1` fails with an `EOFException` while reading the third page.
+`TT2` through `TT8` fail inside `org.apache.pdfbox.jbig2.segments.TextRegion`
 with `IndexOutOfBoundsException: Index 0 out of bounds for length 0` from
-`TextRegion.decodeIb` and render as `BRKN`. That is a useful independent
-signal: Java agrees that the simpler vectors are readable, but its
-text-region path fails on the same family of conformance vectors where
-`jbig2dec` also shows upstream weaknesses. It is not evidence against
-`jbig2-rust`, because the ITU reference and Rust decoder both successfully
-decode most of those vectors.
+`TextRegion.decodeIb` and render as `BRKN`. That is useful independent signal:
+Java agrees that the simpler vectors are readable, but its text-region path
+fails on the same family of conformance vectors where `jbig2dec` also shows
+upstream weaknesses. It is not evidence against `jbig2-rust`, because the ITU
+reference and Rust decoder both successfully decode most of those vectors.
 
-**Classification:** Meaningful coverage for `TT9` and `TT10`. Bucket 1
-(`BRKN`) for `TT2` through `TT8`: diagnosed third-party decoder limitation,
-useful as an interop/weather-vane row, but not a `jbig2-rust` release
-blocker. `SKIP` for `TT1` and `annex-h` until the Java adapter supports
-multi-page decode.
+**Classification:** Meaningful coverage for `TT9`, `TT10`, and `annex-h`.
+Bucket 1 (`BRKN`) for `TT1` through `TT8`: diagnosed third-party decoder
+limitations, useful as an interop/weather-vane row, but not a `jbig2-rust`
+release blocker.
 
 ### 4.5 `itu-t88 / annex-h`: process crash
 
@@ -344,7 +394,8 @@ That vector uses pattern dictionaries, halftone regions, immediate-lossless
 variants, and a multi-segment structure that the 2018-vintage reference C++
 decoder was never built to handle robustly. This is a known fragility of the
 ITU reference codebase rather than a property of `annex-h`: `jbig2dec` and
-`system-binary` decode the same file without complaint.
+`system-binary` decode the same file without complaint, and the Java ImageIO
+adapter now also decodes the first two oracle pages successfully.
 
 **Classification:** Bucket 1. Reproducible third-party limitation in code that
 nobody ships, in a vector authored by Artifex specifically. Keep visible as a
@@ -363,17 +414,17 @@ The "State" column is the rendered token from the harness summary; the
 | `system-binary` / TT9, TT10       | `OK`   | Keep. Cross-decoder evidence.   |
 | `jbig2dec` / TT9, TT10            | `OK`   | Keep. Vendor-pinned baseline.   |
 | `system-binary` / `annex-h`       | `OK`   | Keep.                           |
-| `jbig2dec` / `annex-h`            | `OK`   | Keep. Acts as oracle.           |
+| `jbig2dec` / `annex-h`            | `OK`   | Keep. Vendor-pinned baseline.   |
 | `system-binary` / TT8             | `KI`   | Already cataloged.              |
 | `jbig2dec` / TT8                  | `KI`   | Already cataloged.              |
 | `system-binary` / TT1, TT3, TT4   | `BRKN` | Keep visible; do not KI.        |
 | `jbig2dec` / TT1, TT3, TT4        | `BRKN` | Keep visible; do not KI.        |
 | `system-binary` / TT2             | `BRKN` | Keep visible; do not KI.        |
 | `jbig2dec` / TT2                  | `BRKN` | Keep visible; do not KI.        |
-| `system-binary` / TT5             | `BRKN` | Keep visible; do not KI.        |
-| `jbig2dec` / TT5                  | `BRKN` | Keep visible; do not KI.        |
-| `system-binary` / TT6             | `BRKN` | Keep visible; do not KI.        |
-| `jbig2dec` / TT6                  | `BRKN` | Keep visible; do not KI.        |
+| `system-binary` / TT5             | `WTF`  | Cataloged: upstream WONTFIX (Bug 695737). |
+| `jbig2dec` / TT5                  | `WTF`  | Cataloged: upstream WONTFIX (Bug 695737). |
+| `system-binary` / TT6             | `WTF`  | Cataloged: upstream WONTFIX (Bug 695737 / 695736 / 695741). |
+| `jbig2dec` / TT6                  | `WTF`  | Cataloged: upstream WONTFIX (Bug 695737 / 695736 / 695741). |
 | `system-binary` / TT7             | `BRKN` | Keep visible; do not KI.        |
 | `jbig2dec` / TT7                  | `BRKN` | Keep visible; do not KI.        |
 | `itu-t88` / `annex-h`             | `BRKN` | Keep; KI optional.              |
@@ -381,9 +432,8 @@ The "State" column is the rendered token from the harness summary; the
 | `rust` / TT1                      | `ERR`  | Investigate; fix.               |
 | `rust` / TT5                      | `ERR`  | Fix polarity bug.               |
 | `rust` / `annex-h`                | `ERR`  | Fix; high interop priority.     |
-| `java` / TT9, TT10                | `OK`   | Keep. Independent decoder pass. |
-| `java` / TT2-TT8                  | `BRKN` | Keep visible; do not KI yet.    |
-| `java` / TT1, `annex-h`           | `SKIP` | Until multi-page wrapper.       |
+| `java` / TT9, TT10, `annex-h`     | `OK`   | Keep. Independent decoder pass. |
+| `java` / TT1-TT8                  | `BRKN` | Keep visible; do not KI yet.    |
 
 ## 5. Final groupings
 
@@ -392,27 +442,44 @@ The "State" column is the rendered token from the harness summary; the
 - `itu-t88` decode row TT1-TT10 (oracle continuity).
 - `system-binary` decode TT9, TT10, `annex-h` (cross-decoder evidence).
 - `jbig2dec` decode TT9, TT10, `annex-h` (vendor-pinned baseline).
-- `java` decode TT9 and TT10 (independent ImageIO decoder evidence).
+- `java` decode TT9, TT10, and `annex-h` (independent ImageIO decoder evidence).
 - `rust` decode TT2, TT3, TT4, TT6, TT7, TT8, TT9, TT10 (real spec coverage).
 
-### 5.2 Cataloged known issues (Bucket 2)
+### 5.2 Cataloged known issues (Bucket 2 / `KI`)
 
 - `system-binary` / `TT8` and `jbig2dec` / `TT8`: AMD3 colour-palette segments
   unimplemented in `jbig2dec`. Vendor pin: `vendor/jbig2dec@6ecb04980813`.
   Already in `tools/conformance/known-issues.ron`.
 
+### 5.2a Cataloged upstream Won't-Fix (Bucket 1a / `WTF`)
+
+- `system-binary` / `TT5` and `jbig2dec` / `TT5`: refinement-aggregate
+  symbol-dictionary path drops the symbols it just decoded when
+  `REFAGGNINST > 1`, surfacing as `FATAL ERROR refinement references unknown
+  symbol 0`. Closed `RESOLVED WONTFIX` upstream
+  (https://bugs.ghostscript.com/show_bug.cgi?id=695737). Vendor pin:
+  `vendor/jbig2dec@6ecb04980813`.
+- `system-binary` / `TT6` and `jbig2dec` / `TT6`: same upstream defect as
+  TT5, exposed via a text region with symbol refinement
+  (`FATAL ERROR OOB obtained when decoding symbol instance refinement
+  data`). Companion tickets
+  https://bugs.ghostscript.com/show_bug.cgi?id=695736 and
+  https://bugs.ghostscript.com/show_bug.cgi?id=695741 are also closed
+  WONTFIX. Vendor pin: `vendor/jbig2dec@6ecb04980813`.
+
 ### 5.3 Third-party noise we keep visible without cataloging (Bucket 1)
 
-- `system-binary` and `jbig2dec` on TT1-TT7 (seven distinct upstream defects
-  in `jbig2dec`'s arithmetic, MMR, RefAGG, refined-text, and extended-template
+- `system-binary` and `jbig2dec` on TT1, TT2, TT3, TT4, TT7 (five distinct
+  upstream defects in `jbig2dec`'s arithmetic, MMR, and extended-template
   paths). Worth keeping in the matrix as a third-party-quality signal and as
   a regression detector for any future `jbig2dec` upgrade. Not a release
-  blocker, not catalogued as KI under the strict bar.
-- `java` on TT2-TT8. The vendored ImageIO decoder fails inside
-  `TextRegion.decodeIb` with the same `IndexOutOfBoundsException` shape
-  across these vectors. Useful cross-decoder evidence, but not a release
-  blocker for `jbig2-rust` because the ITU reference and Rust agree on most
-  of the same vectors.
+  blocker, not catalogued as KI under the strict bar; TT2 may be eligible
+  for promotion to `WTF` once Bug 709207 (or a sibling MMR ticket) reaches
+  a definitive upstream resolution.
+- `java` on TT1-TT8. TT1 fails with `EOFException`; TT2-TT8 fail inside
+  `TextRegion.decodeIb` with the same `IndexOutOfBoundsException` shape.
+  Useful cross-decoder evidence, but not a release blocker for `jbig2-rust`
+  because the ITU reference and Rust agree on most of the same vectors.
 - `itu-t88 / annex-h` process crash on Artifex multi-feature stream.
   Optional KI on the crash fingerprint.
 
@@ -429,10 +496,9 @@ The "State" column is the rendered token from the harness summary; the
 
 ### 5.5 Harness/oracle bugs to fix
 
-- **Java adapter**: add multi-page decode support if we want Java coverage
-  for `TT1` and `annex-h`. Today those cells render `SKIP` purely because of
-  the wrapper's single-page behavior, not because of any structural reason
-  in the matrix.
+No remaining decode-harness/oracle issue is identified in this audit pass. The
+Java adapter now covers multi-page streams, and the Annex H oracle is a
+spec-derived BMP snapshot rather than live decoder output.
 
 ### 5.6 Low-value or invalid cells to consider trimming
 
@@ -454,7 +520,7 @@ The "State" column is the rendered token from the harness summary; the
 
 ### 6.2 Fix in the harness
 
-1. Java adapter: add multi-page decode support.
+No immediate harness fix remains from this pass.
 
 ### 6.3 Catalog or trim
 
