@@ -20,6 +20,11 @@ Cargo.lock.bak
 *.dylib
 *.dSYM/
 
+# Java / Maven build artifacts
+*.class
+*.jar
+*.war
+
 # Environment
 .env
 .env.local

@@ -56,7 +56,7 @@ pub fn source_corpus_dir() -> PathBuf {
 pub fn repo_corpus_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("benchmark-corpus")
-        .join("patent-10k")
+        .join("patent-500")
 }
 
 pub fn manifest_path() -> PathBuf {
@@ -68,9 +68,8 @@ pub fn ensure_repo_corpus() -> Result<Vec<CorpusEntry>, String> {
         return Err(format!(
             "checked-in benchmark corpus is missing at {}.\n\
              expected the manifest to be present in this checkout.\n\
-             if you are intentionally re-rolling the fixed sample (maintainer only), run:\n\
-             \n\
-                 CARGO_HOME=./.cargo cargo run --release --example prepare_corpus -- --confirm\n",
+             if you are intentionally re-rolling the fixed sample (maintainer only),\n\
+             re-roll using the corpus-mint tooling.\n",
             manifest_path().display(),
         ));
     }
@@ -96,6 +95,15 @@ pub fn bucket_entries(bucket: SizeBucket, max: usize) -> Result<Vec<CorpusEntry>
 
 pub fn load_bucket(bucket: SizeBucket, max: usize) -> Result<Vec<(CorpusEntry, Bitmap)>, String> {
     let entries = bucket_entries(bucket, max)?;
+    load_entries(entries)
+}
+
+pub fn load_full_corpus() -> Result<Vec<(CorpusEntry, Bitmap)>, String> {
+    let entries = ensure_repo_corpus()?;
+    load_entries(entries)
+}
+
+fn load_entries(entries: Vec<CorpusEntry>) -> Result<Vec<(CorpusEntry, Bitmap)>, String> {
     entries
         .into_iter()
         .map(|entry| {
@@ -137,8 +145,8 @@ pub fn load_bitmap(path: &Path) -> Result<Bitmap, String> {
 }
 
 fn read_manifest() -> Result<Vec<CorpusEntry>, String> {
-    let file =
-        File::open(manifest_path()).map_err(|e| format!("open manifest {:?}: {e}", manifest_path()))?;
+    let file = File::open(manifest_path())
+        .map_err(|e| format!("open manifest {:?}: {e}", manifest_path()))?;
     let reader = BufReader::new(file);
     let mut entries = Vec::new();
     for (line_no, line) in reader.lines().enumerate() {

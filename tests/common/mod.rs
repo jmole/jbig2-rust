@@ -2,6 +2,9 @@
 //! BMP reader.
 #![allow(dead_code)]
 
+pub mod corpus;
+pub mod oracles;
+
 use std::path::PathBuf;
 
 use jbig2::{Bitmap, RgbBitmap};
