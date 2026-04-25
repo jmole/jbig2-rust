@@ -5,7 +5,7 @@
 pub mod corpus;
 pub mod oracles;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use jbig2::{Bitmap, RgbBitmap};
 
@@ -27,6 +27,11 @@ pub fn conformance_dir() -> PathBuf {
 /// Load a conformance BMP from the vendored test set.
 pub fn load_conformance_bmp(name: &str) -> ReferenceImage {
     let path = conformance_dir().join(name);
+    load_bmp_path(&path)
+}
+
+/// Load a BMP from an arbitrary path.
+pub fn load_bmp_path(path: &Path) -> ReferenceImage {
     let data = std::fs::read(&path).unwrap_or_else(|e| panic!("read {path:?}: {e}"));
     match u16::from_le_bytes(data[28..30].try_into().unwrap()) {
         1 => ReferenceImage::Mono(parse_bmp_1bpp(&data)),

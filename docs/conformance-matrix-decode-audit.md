@@ -237,8 +237,8 @@ errors render as `FAIL(...)` instead of misleading row mismatches when
 TT4 all show first-row pixel disagreement; TT7 disagrees at row 0. These
 remain real pixel comparisons, not setup failures. The ITU reference decoder
 passes all four TT vectors, while `jbig2dec` is the outlier in the
-cross-decoder comparison. `rust / TT1` is still a separate product bug, so TT1
-is not evidence that Rust agrees with the oracle yet.
+cross-decoder comparison. `rust / TT1` now agrees with the oracle, so TT1 is
+no longer evidence against the Rust decoder.
 
 **TT2, TT5, TT6: fatal upstream decode diagnostics.** Each of these prints a
 stable `jbig2dec` diagnostic that the harness now reports directly:
@@ -318,51 +318,33 @@ bar - because we have direct upstream evidence that the failures will
 persist indefinitely, and that fact is itself worth surfacing in the
 matrix.
 
-### 4.3 The `rust` row: three real product bugs to investigate
+### 4.3 The `rust` row is now green
 
-`rust` is green on TT2-TT4 and TT6-TT10. Three cells need attention.
+`rust` is green on TT1-TT10 and `annex-h`. The three former product bugs were
+real decoder defects and are fixed:
 
-**`rust / TT1`: `FAIL(decode page 3: invalid Huffman code: text region: IARI returned OOB)`.**
-TT1 is a 3-page stream. The error message says `decode page 3`, which is the
-final page (`decode_with_rust` iterates `1..=expected_pages` with
-`expected_pages=3`). The error is raised from text-region decode while
-processing an `IARI` integer with a Huffman OOB result. The earlier deleted
-`docs/conformance-deviations.md` traced a similar issue to a disagreement
-between the T.88 spec text on `IARI` and the reference C++ behavior, but that
-analysis was retracted as flawed and the documentation was removed. We do not
-have a current, defensible diagnosis of this failure. We need a fresh
-investigation that re-derives the Huffman state at the point of failure
-against the spec; once we have that we can decide whether this is our bug,
-a spec ambiguity, or both.
+- **`rust / TT1`** failed on page 3 while decoding segment 17, an
+  `SDREFAGG=1` symbol dictionary. The nested aggregate text region used the
+  running symbol-table length as `SBSYMCODELEN`; T.88 6.5.8.2.3 fixes that
+  code width to `ceil(log2(NUMINSYMS + SDNUMNEWSYMS))` for the whole
+  dictionary. After fixing that, the stream exposed the ITU reference encoder's
+  already-documented malformed `IAEX(0), IAEX(0)` export shortcut, so the
+  existing export fallback now also handles malformed IAEX runs rather than
+  only physical end-of-body.
+- **`rust / TT5`** was a 24-pixel mismatch in the two instances of the refined
+  symbol, not a full-page polarity inversion. The root cause was the generic
+  refinement context order: our decoder used the `jbig2dec`/ImageIO private
+  context layout, but the T.88 conformance streams were authored by the ITU
+  sample encoder. `src/segments/refinement_region.rs` now mirrors
+  `Jb2_MQLapper.cpp::CX_RefEncode`.
+- **`rust / annex-h`** failed in page-1 segment 3, the Huffman text region. The
+  Artifex fixture uses the normative 7.4.3.1.5 symbol-ID Huffman table
+  expansion, while the old decoder only implemented the ITU sample-decoder
+  shortcut needed by TT1. The text-region decoder now tries the normative table
+  first and falls back to the sample-decoder shortcut.
 
-**Classification:** Bucket 3 (presumed product bug) until disproven. Do not
-KI; investigate.
-
-**`rust / TT5`: `MISMATCH(row 4)`.**
-The mismatch is at row 4 of the decoded page. Inspection of the rust output
-versus the source via the `jbig2` CLI (`cargo run --features cli,image --bin
-jbig2 -- decode ...`) shows that the rust output is fully inverted for this
-vector. The ITU reference decoder produces the BMP oracle correctly; our
-decoder produces its negative. The root cause is almost certainly a polarity
-or default-pixel handling bug in our refinement / RefAGG path (the same area
-that causes `jbig2dec`'s `RefAGG refinement error` on the same vector, just
-for a different reason).
-
-**Classification:** Bucket 3 product bug. Fix.
-
-**`rust / annex-h`: `FAIL(decode page 1: unexpected end of stream (need 1 more bytes))`.**
-`annex-h.jbig2` is a 3-page Artifex test stream that exercises pattern
-dictionaries, halftone regions, and immediate-lossless region variants
-(`info` shows `ImmediateLosslessTextRegion`, `ImmediateLosslessGenericRegion`,
-`PatternDictionary`, `ImmediateLosslessHalftoneRegion`, plus a global
-SymbolDictionary on a separate page). Our decoder runs out of input one byte
-short while parsing page 1, which is the page that combines almost every
-feature. `jbig2dec` decodes the file fine (it is their own test fixture);
-the ITU reference decoder crashes on it (see 4.5).
-
-**Classification:** Bucket 3 product bug. Real-world Artifex-shaped streams
-are exactly the streams `jbig2-rust` is most likely to encounter in PDF
-pipelines, so this is interop-critical, not just a spec compliance issue.
+**Classification:** all three are now Bucket 0 (`OK`) for `jbig2-rust`; the
+third-party rows remain classified independently.
 
 ### 4.4 The `java` row is real cross-decoder evidence
 
@@ -428,10 +410,7 @@ The "State" column is the rendered token from the harness summary; the
 | `system-binary` / TT7             | `BRKN` | Keep visible; do not KI.        |
 | `jbig2dec` / TT7                  | `BRKN` | Keep visible; do not KI.        |
 | `itu-t88` / `annex-h`             | `BRKN` | Keep; KI optional.              |
-| `rust` / TT2, TT3, TT4, TT6-TT10  | `OK`   | Keep. Real spec coverage.       |
-| `rust` / TT1                      | `ERR`  | Investigate; fix.               |
-| `rust` / TT5                      | `ERR`  | Fix polarity bug.               |
-| `rust` / `annex-h`                | `ERR`  | Fix; high interop priority.     |
+| `rust` / TT1-TT10, `annex-h`      | `OK`   | Keep. Real spec + interop coverage. |
 | `java` / TT9, TT10, `annex-h`     | `OK`   | Keep. Independent decoder pass. |
 | `java` / TT1-TT8                  | `BRKN` | Keep visible; do not KI yet.    |
 
@@ -443,7 +422,7 @@ The "State" column is the rendered token from the harness summary; the
 - `system-binary` decode TT9, TT10, `annex-h` (cross-decoder evidence).
 - `jbig2dec` decode TT9, TT10, `annex-h` (vendor-pinned baseline).
 - `java` decode TT9, TT10, and `annex-h` (independent ImageIO decoder evidence).
-- `rust` decode TT2, TT3, TT4, TT6, TT7, TT8, TT9, TT10 (real spec coverage).
+- `rust` decode TT1-TT10 and `annex-h` (real spec + interop coverage).
 
 ### 5.2 Cataloged known issues (Bucket 2 / `KI`)
 
@@ -485,14 +464,9 @@ The "State" column is the rendered token from the harness summary; the
 
 ### 5.4 Product bugs in `jbig2-rust` to fix (Bucket 3)
 
-- **`rust / TT1`**: text-region IARI Huffman OOB on page 3 of TT1. Needs a
-  fresh, defensible diagnosis (the prior conformance-deviations notes were
-  retracted). Open as a tracked bug.
-- **`rust / TT5`**: full-page polarity inversion. Almost certainly in the
-  refinement / RefAGG path. Open as a tracked bug.
-- **`rust / annex-h`**: decoder runs out of input one byte short on page 1
-  of the Artifex multi-feature stream. High interop priority because real
-  PDF inputs look like `annex-h`, not like `TT9`. Open as a tracked bug.
+No decode product bugs remain in the current matrix. The former TT1, TT5, and
+`annex-h` cells are documented in the fix log below and covered by regression
+tests.
 
 ### 5.5 Harness/oracle bugs to fix
 
@@ -510,26 +484,38 @@ spec-derived BMP snapshot rather than live decoder output.
   rows agree (e.g. show the system row with a footnote when it diverges
   from the vendored row).
 
-## 6. Repo actions
+## 6. Rust decoder fix log
 
-### 6.1 Open as tracked bugs in `jbig2-rust`
+1. **TT1 page 3 / RefAGG:** segment 17 (`SDREFAGG=1`, body `757..789`) uses a
+   nested aggregate text region inside the symbol dictionary. The fix uses the
+   dictionary-wide `SBSYMCODELEN` from T.88 6.5.8.2.3 and extends the
+   reference-encoder IAEX fallback to malformed export runs.
+2. **TT5 / refined symbol:** the final diff was 24 pixels across the two
+   placements of the refined symbol. The fix changes refinement context
+   construction to match the ITU sample encoder/decoder context order in
+   `Jb2_MQLapper.cpp::CX_RefEncode`.
+3. **annex-h page 1 / Huffman text:** page-1 segment 3 is the failing segment.
+   The fix implements the normative 7.4.3.1.5 symbol-ID Huffman table
+   expansion and keeps the ITU sample shortcut as a compatibility fallback.
 
-1. Decode failure of TT1 page 3 (`text region: IARI returned OOB`).
-2. Decode polarity inversion of TT5.
-3. Decode failure of `annex-h.jbig2` page 1.
+## 7. Repo actions
 
-### 6.2 Fix in the harness
+### 7.1 Open as tracked bugs in `jbig2-rust`
+
+No open decode-conformance product bugs remain.
+
+### 7.2 Fix in the harness
 
 No immediate harness fix remains from this pass.
 
-### 6.3 Catalog or trim
+### 7.3 Catalog or trim
 
 1. (Optional) add a strict KI for `itu-t88 / annex-h` based on the stable
    process-crash fingerprint.
 2. (Optional) collapse the duplicated `system-binary` / `jbig2dec` rendered
    rows when they agree, keeping the underlying drift check intact.
 
-### 6.4 Keep as-is
+### 7.4 Keep as-is
 
 Everything in section 5.1 and the existing entry in section 5.2 stay where
 they are. The decode matrix is doing the job it was designed for: it makes

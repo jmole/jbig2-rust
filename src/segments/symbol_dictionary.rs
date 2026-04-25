@@ -26,7 +26,7 @@ use crate::segments::page_information::CombinationOp;
 use crate::segments::refinement_region::{decode_refinement_region, encode_refinement_region};
 use crate::segments::region_info::RegionInfo;
 use crate::segments::text_region::{
-    decode_text_region_body, sym_code_len, RefCorner, TextRegionHeader,
+    decode_text_region_body_with_code_len, sym_code_len, RefCorner, TextRegionHeader,
 };
 use crate::segments::AtPixels;
 
@@ -333,6 +333,7 @@ pub fn decode_symbol_dictionary_with_contexts(
     let mut cur: u8 = 0;
     let body_end = body.len();
     let mut exhausted_body = false;
+    let mut invalid_export_stream = false;
     while idx < total {
         if dec.position() >= body_end {
             exhausted_body = true;
@@ -345,9 +346,8 @@ pub fn decode_symbol_dictionary_with_contexts(
             "symbol dictionary: export run overflows",
         ))?;
         if end > total {
-            return Err(Jbig2Error::OutOfRange(
-                "symbol dictionary: export run exceeds total symbol count",
-            ));
+            invalid_export_stream = true;
+            break;
         }
         for s in idx..end {
             flags[s as usize] = cur;
@@ -356,7 +356,24 @@ pub fn decode_symbol_dictionary_with_contexts(
         cur ^= 1;
     }
 
-    if idx < total {
+    if invalid_export_stream {
+        // Same ITU reference-encoder shortcut as the EOF path below, but the
+        // trailing bytes decoded as a formally-invalid IAEX run instead of
+        // stopping cleanly at the body boundary.
+        flags.fill(0);
+        let n_in = import_symbols.len() as u32;
+        if header.num_ex_syms == total {
+            flags.fill(1);
+        } else if header.num_ex_syms == header.num_new_syms {
+            for s in n_in..total {
+                flags[s as usize] = 1;
+            }
+        } else {
+            return Err(Jbig2Error::OutOfRange(
+                "symbol dictionary: export run exceeds total symbol count",
+            ));
+        }
+    } else if idx < total {
         // Lenient fallback for the reference-encoder shortcut. Jbig2ENC.cpp
         // always emits `IAEX(0), IAEX(0)` regardless of the actual symbol
         // count, and Jbig2DEC.cpp just discards both values then keeps its
@@ -788,7 +805,7 @@ fn decode_refagg_symbol(
             rat: header.rat,
             num_instances: refaggn as u32,
         };
-        decode_text_region_body(dec, cxs, &hdr, &sbsyms)
+        decode_text_region_body_with_code_len(dec, cxs, &hdr, &sbsyms, code_len)
     }
 }
 
@@ -902,30 +919,20 @@ pub fn encode_symbol_dictionary_refagg(
             )?;
             i += 1;
         }
-        encode_integer(&mut enc, &mut cxs, IADW, OOB)?;
+        // The refinement/aggregate path has a fixed symbol count from
+        // SDNUMNEWSYMS/IAAI, and the decoder follows the reference encoder by
+        // stopping without consuming a height-class OOB terminator.
+        if !header.sdrefagg {
+            encode_integer(&mut enc, &mut cxs, IADW, OOB)?;
+        }
     }
 
-    // Match the ITU-T reference encoder's shortcut: emit `IAEX(0),
-    // IAEX(0)` regardless of import count when num_ex_syms ==
-    // num_new_syms (the "export all new symbols" case). Decoders that
-    // strictly follow 6.5.10 must accept this pattern (our decoder
-    // does). For the rare case where exports are a strict subset, fall
-    // back to the spec-compliant run encoding.
-    if header.num_ex_syms == header.num_new_syms {
-        encode_integer(&mut enc, &mut cxs, IAEX, 0)?;
-        encode_integer(&mut enc, &mut cxs, IAEX, 0)?;
-    } else {
-        let mut cur: u8 = 0;
-        if !imports.is_empty() {
-            encode_integer(&mut enc, &mut cxs, IAEX, imports.len() as i32)?;
-            cur ^= 1;
-        } else {
-            encode_integer(&mut enc, &mut cxs, IAEX, 0)?;
-            cur ^= 1;
-        }
-        let _ = cur;
-        encode_integer(&mut enc, &mut cxs, IAEX, header.num_new_syms as i32)?;
-    }
+    // Emit the export flags exactly as 6.5.10 specifies so downstream
+    // decoders (notably jbig2dec) see a standards-compliant run-length
+    // stream rather than the T.88 sample encoder's `IAEX(0), IAEX(0)`
+    // shortcut.
+    encode_integer(&mut enc, &mut cxs, IAEX, imports.len() as i32)?;
+    encode_integer(&mut enc, &mut cxs, IAEX, header.num_new_syms as i32)?;
 
     Ok(enc.finish())
 }
@@ -1000,26 +1007,10 @@ pub fn encode_symbol_dictionary_with_contexts(
         encode_integer(&mut enc, cxs, IADW, OOB)?;
     }
 
-    // Export run stream — see notes in `encode_symbol_dictionary` above
-    // (and the matching decoder leniency in
-    // `decode_symbol_dictionary_with_contexts`). Conform to the
-    // reference encoder's `IAEX(0), IAEX(0)` shortcut whenever
-    // `num_ex_syms == num_new_syms`; otherwise emit explicit runs.
-    if header.num_ex_syms == header.num_new_syms {
-        encode_integer(&mut enc, cxs, IAEX, 0)?;
-        encode_integer(&mut enc, cxs, IAEX, 0)?;
-    } else {
-        let mut cur: u8 = 0;
-        if import_count > 0 {
-            encode_integer(&mut enc, cxs, IAEX, import_count as i32)?;
-            cur ^= 1;
-        } else {
-            encode_integer(&mut enc, cxs, IAEX, 0)?;
-            cur ^= 1;
-        }
-        let _ = cur;
-        encode_integer(&mut enc, cxs, IAEX, header.num_new_syms as i32)?;
-    }
+    // Emit the standards-compliant export-flag run stream so external
+    // decoders do not depend on the T.88 sample encoder's shortcut.
+    encode_integer(&mut enc, cxs, IAEX, import_count as i32)?;
+    encode_integer(&mut enc, cxs, IAEX, header.num_new_syms as i32)?;
 
     Ok(enc.finish())
 }

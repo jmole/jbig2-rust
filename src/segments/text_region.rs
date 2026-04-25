@@ -325,12 +325,73 @@ fn decode_text_region_symbol_id_table(
     run_code_lens[34] = r.read_bits(4)? as u8;
     let run_codes = build_canonical_codes(&run_code_lens)?;
 
+    let mut code_lengths = Vec::with_capacity(num_syms);
+    while code_lengths.len() < num_syms {
+        let run_idx = decode_canonical_symbol(r, &run_codes)?;
+        match run_idx {
+            0..=31 => code_lengths.push(run_idx as u8),
+            32 => {
+                let prev = *code_lengths.last().ok_or(Jbig2Error::InvalidHuffman(
+                    "text region: RUNCODE32 without previous symbol ID length",
+                ))?;
+                let repeat = r.read_bits(2)? as usize + 3;
+                for _ in 0..repeat {
+                    if code_lengths.len() >= num_syms {
+                        return Err(Jbig2Error::InvalidHuffman(
+                            "text region: symbol ID length run exceeds SBNUMSYMS",
+                        ));
+                    }
+                    code_lengths.push(prev);
+                }
+            }
+            33 => {
+                let repeat = r.read_bits(3)? as usize + 3;
+                for _ in 0..repeat {
+                    if code_lengths.len() >= num_syms {
+                        return Err(Jbig2Error::InvalidHuffman(
+                            "text region: zero-length run exceeds SBNUMSYMS",
+                        ));
+                    }
+                    code_lengths.push(0);
+                }
+            }
+            34 => {
+                let repeat = r.read_bits(7)? as usize + 11;
+                for _ in 0..repeat {
+                    if code_lengths.len() >= num_syms {
+                        return Err(Jbig2Error::InvalidHuffman(
+                            "text region: long zero-length run exceeds SBNUMSYMS",
+                        ));
+                    }
+                    code_lengths.push(0);
+                }
+            }
+            _ => unreachable!("run-code table has 35 entries"),
+        }
+    }
+    r.byte_align();
+    build_canonical_codes(&code_lengths)
+}
+
+fn decode_text_region_symbol_id_table_reference_quirk(
+    r: &mut HuffReader<'_>,
+    num_syms: usize,
+) -> Jbig2Result<Vec<CanonicalCode>> {
+    let mut run_code_lens = [0u8; 35];
+    for i in 0..17 {
+        let b = r.read_bits(8)? as u8;
+        run_code_lens[i * 2] = b >> 4;
+        run_code_lens[i * 2 + 1] = b & 0x0f;
+    }
+    run_code_lens[34] = r.read_bits(4)? as u8;
+    let run_codes = build_canonical_codes(&run_code_lens)?;
+
     // The T.88 sample decoder does not reconstruct the intermediate
     // SBNUMSYMS code-length array from 7.4.3.1.7 literally. Instead it
     // expands each decoded run code directly into one concrete symbol-ID
-    // canonical code using `(run_prefix << run_code) + occurrence_index`,
-    // with total code length `run_prefix_len + run_code`. TT1 is authored
-    // against that decoder, so we mirror the same construction.
+    // canonical code using `(run_prefix << run_code) + occurrence_index`.
+    // Some conformance streams are authored against that decoder, while
+    // Artifex's annex-h fixture uses the normative table above.
     let mut by_symbol = vec![
         CanonicalCode {
             symbol: 0,
@@ -375,6 +436,16 @@ fn decode_text_region_huffman(
         ));
     }
 
+    decode_text_region_huffman_impl(header, body, sbsyms, false)
+        .or_else(|_| decode_text_region_huffman_impl(header, body, sbsyms, true))
+}
+
+fn decode_text_region_huffman_impl(
+    header: &TextRegionHeader,
+    body: &[u8],
+    sbsyms: &[&Bitmap],
+    reference_quirk: bool,
+) -> Jbig2Result<Bitmap> {
     let fs_table = select_text_region_fs_table(header.sbhuff_fs)?;
     let ds_table = select_text_region_ds_table(header.sbhuff_ds)?;
     let dt_table = select_text_region_dt_table(header.sbhuff_dt)?;
@@ -385,7 +456,11 @@ fn decode_text_region_huffman(
         header.default_pixel,
     )?;
     let mut r = HuffReader::new(body);
-    let symbol_codes = decode_text_region_symbol_id_table(&mut r, sbsyms.len())?;
+    let symbol_codes = if reference_quirk {
+        decode_text_region_symbol_id_table_reference_quirk(&mut r, sbsyms.len())?
+    } else {
+        decode_text_region_symbol_id_table(&mut r, sbsyms.len())?
+    };
 
     let sb_strips = 1u32 << header.log_sbstrips;
     let mut first_s = true;
@@ -570,12 +645,32 @@ pub fn decode_text_region_body(
     header: &TextRegionHeader,
     sbsyms: &[&Bitmap],
 ) -> Jbig2Result<Bitmap> {
+    decode_text_region_body_with_code_len(
+        dec,
+        cxs,
+        header,
+        sbsyms,
+        sym_code_len(sbsyms.len() as u32),
+    )
+}
+
+/// Decode an arithmetic-coded text region body with an explicitly supplied
+/// symbol-code width. Symbol-dictionary aggregate bodies use the final
+/// SBSYMCODELEN for the dictionary even while only a prefix of the symbols is
+/// currently referable.
+pub fn decode_text_region_body_with_code_len(
+    dec: &mut MqDecoder<'_>,
+    cxs: &mut MqContexts,
+    header: &TextRegionHeader,
+    sbsyms: &[&Bitmap],
+    code_len: u32,
+) -> Jbig2Result<Bitmap> {
     let mut region = Bitmap::filled(
         header.region.width,
         header.region.height,
         header.default_pixel,
     )?;
-    for_each_decoded_text_instance(dec, cxs, header, sbsyms, |ib, x0, y0, _| {
+    for_each_decoded_text_instance(dec, cxs, header, sbsyms, code_len, |ib, x0, y0, _| {
         region.composite(ib, x0, y0, header.sbcombop.into());
         Ok(())
     })?;
@@ -621,10 +716,17 @@ pub fn decode_text_region_colour_with_contexts(
     cxs.reset();
     let mut dec = MqDecoder::new(body);
     let mut region = RgbBitmap::filled(header.region.width, header.region.height, [255, 255, 255])?;
-    for_each_decoded_text_instance(&mut dec, cxs, header, sbsyms, |ib, x0, y0, ninst| {
-        region.composite_mask_color(ib, x0, y0, colours[ninst as usize]);
-        Ok(())
-    })?;
+    for_each_decoded_text_instance(
+        &mut dec,
+        cxs,
+        header,
+        sbsyms,
+        sym_code_len(sbsyms.len() as u32),
+        |ib, x0, y0, ninst| {
+            region.composite_mask_color(ib, x0, y0, colours[ninst as usize]);
+            Ok(())
+        },
+    )?;
     Ok(region)
 }
 
@@ -633,6 +735,7 @@ fn for_each_decoded_text_instance<F>(
     cxs: &mut MqContexts,
     header: &TextRegionHeader,
     sbsyms: &[&Bitmap],
+    code_len: u32,
     mut emit: F,
 ) -> Jbig2Result<()>
 where
@@ -649,7 +752,6 @@ where
         ));
     }
 
-    let code_len = sym_code_len(sbsyms.len() as u32);
     let sb_strips = 1u32 << header.log_sbstrips;
     let s0 = decode_integer(dec, cxs, IADT).ok_or(Jbig2Error::InvalidHuffman(
         "text region: IADT initial returned OOB",
