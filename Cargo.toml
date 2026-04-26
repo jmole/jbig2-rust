@@ -26,6 +26,7 @@ image = ["dep:image"]
 rayon = ["dep:rayon"]
 mmr = []
 cli = ["dep:clap", "dep:anyhow", "dep:image"]
+validator-cli = ["dep:anyhow", "dep:clap", "dep:serde", "dep:serde_json"]
 conformance-tools = ["dep:ron", "dep:serde"]
 # Sandboxed external-process runner used by the conformance matrix, the
 # corpus runner, and the integration-test oracle helpers. Pulls in `libc`
@@ -41,6 +42,7 @@ clap = { version = "4", features = ["derive"], optional = true }
 anyhow = { version = "1", optional = true }
 ron = { version = "0.12.1", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
 libc = { version = "0.2", optional = true }
 
 [dev-dependencies]
@@ -69,6 +71,11 @@ required-features = ["image", "conformance-tools"]
 name = "annex-h-oracle"
 path = "tools/conformance/annex_h_oracle.rs"
 required-features = ["image"]
+
+[[bin]]
+name = "jbig2-validate"
+path = "tools/validator/main.rs"
+required-features = ["validator-cli"]
 
 [profile.release]
 opt-level = 3

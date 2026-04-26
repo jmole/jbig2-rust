@@ -92,6 +92,7 @@ pub mod rgb_bitmap;
 pub mod segments;
 pub mod symbol;
 pub mod util;
+pub mod validator;
 
 pub use bitmap::Bitmap;
 pub use decoder::{DecodedPage, Jbig2Decoder};
