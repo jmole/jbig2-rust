@@ -256,6 +256,27 @@ Things the next plan should pick up; this doc does not pre-decide.
   The cross-check shape should be "list of (path, sha) pairs," not
   "the one annex-h path."
 
+## Implementation status
+
+This section records what has landed from step 1 and what remains
+explicitly deferred.
+
+- **Landed: seed drift cross-check.** Commit `201d38c5` added regression
+  checks that read `meta.toml` seed anchors and fail loudly when a
+  fixture's vendored seed has moved.
+- **Landed: shared vendor-anchor infrastructure.** Commit `03fc124b`
+  introduced [`src/util/vendor_anchor.rs`](../src/util/vendor_anchor.rs)
+  and wired step 2 to reuse it, satisfying this doc's requirement that
+  drift checks and preflights share one anchor helper rather than
+  parallel implementations.
+- **Still open: `check_ids` strict-superset softening.** The regression
+  contract still persists and asserts historical `check_ids`; the
+  proposed shift to "assert primary id only, treat extra ids as
+  informational" remains follow-up work.
+- **Still open: policy questions in this doc's open-questions list.**
+  Auto-regeneration policy and future multi-seed cross-impl coverage are
+  still unresolved by design.
+
 ## Pointers
 
 - The mutator that records `seed_sha256`:

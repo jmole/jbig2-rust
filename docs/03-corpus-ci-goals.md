@@ -187,6 +187,31 @@ leaves them unresolved.
   the same way to vendor refreshes; the open question is whether
   vendor bumps should auto-rerun tier 1 or wait for the nightly.
 
+## Implementation status
+
+This section records what has landed for step 3 and what remains
+explicitly deferred.
+
+- **Landed now: tier-0 PR gating and baseline hygiene CI.** The repo now
+  has a PR-gating workflow with `cargo fmt --check`,
+  `cargo test --workspace`, and the tier-0 strict corpus shim
+  (`cargo test --release --features validator-corpus --test
+  corpus_validator_strict`).
+- **Landed now: tier-1 nightly wiring.** A nightly workflow now runs
+  `corpus-validator --strict --with-c-decoders`, uploads
+  `target/corpus-report.md`, and opens/updates a tracking issue on
+  scheduled failures.
+- **Deferred: sanitizer cadence policy.** This step still does not
+  choose between "ASAN every tier-1 run" vs "ASAN at a slower cadence."
+  That decision stays coupled to the sanitizer-canary follow-up in
+  [`docs/02-sandbox-preflights.md`](02-sandbox-preflights.md).
+- **Deferred: cross-platform fan-out.** Tier-0 remains Linux-first.
+  Whether to fan out tier-0 across Linux/macOS on every PR is still a
+  budget decision.
+- **Deferred: vendor-bump trigger policy.** Whether `vendor/jbig2dec`
+  bumps should auto-trigger tier-1 remains open; nightly cadence is the
+  current baseline.
+
 ## Pointers
 
 - The harness this doc gates on:
