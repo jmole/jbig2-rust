@@ -29,9 +29,9 @@ impl Check for RefinementRegionFlags {
         tree.segments
             .iter()
             .filter_map(|node| match node.parsed {
-                ParsedBody::RefinementRegion { flags: Some(flags), .. } if flags & 0xFC != 0 => {
-                    Some(node)
-                }
+                ParsedBody::RefinementRegion {
+                    flags: Some(flags), ..
+                } if flags & 0xFC != 0 => Some(node),
                 _ => None,
             })
             .map(|node| {
@@ -53,7 +53,10 @@ impl Check for RefinementReferenceType {
     }
 
     fn cite(&self) -> SpecCite {
-        SpecCite::t88("7.4.7", "Generic refinement regions shall refer to a bitmap source segment to be refined.")
+        SpecCite::t88(
+            "7.4.7",
+            "Generic refinement regions shall refer to a bitmap source segment to be refined.",
+        )
     }
 
     fn run(&self, _ctx: &CheckCtx, tree: &SegmentTree) -> Vec<Finding> {

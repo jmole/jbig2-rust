@@ -56,10 +56,14 @@ fn render() -> String {
     out.push('\n');
     out.push_str("## Lenses\n\n");
     out.push_str("| Lens | Purpose |\n|---|---|\n");
-    out.push_str("| `Lens::StrictT88` | Default. Reports every catalog check at its declared severity. |\n");
+    out.push_str(
+        "| `Lens::StrictT88` | Default. Reports every catalog check at its declared severity. |\n",
+    );
     out.push_str("| `Lens::Jbig2decInterop` | Re-weights checks that Artifex `jbig2dec` ignores in practice. |\n");
     out.push_str("| `Lens::ItuT88Interop` | Re-weights checks that the ITU-T T.88 reference codec accepts. |\n");
-    out.push_str("| `Lens::ImageioInterop` | Re-weights checks that PDFBox `jbig2-imageio` ignores. |\n\n");
+    out.push_str(
+        "| `Lens::ImageioInterop` | Re-weights checks that PDFBox `jbig2-imageio` ignores. |\n\n",
+    );
     out.push_str("## Severity semantics\n\n");
     out.push_str("- `Error`  - strict T.88 violation; renders as `BAD(N)` in matrix cells.\n");
     out.push_str("- `Warning` - non-fatal interop concern; renders as `WARN(N)`.\n");

@@ -17,7 +17,10 @@ impl Check for ExtensionBody {
     }
 
     fn cite(&self) -> SpecCite {
-        SpecCite::t88("7.4.15", "The extension segment shall begin with an extension type field and extension flags.")
+        SpecCite::t88(
+            "7.4.15",
+            "The extension segment shall begin with an extension type field and extension flags.",
+        )
     }
 
     fn run(&self, _ctx: &CheckCtx, tree: &SegmentTree) -> Vec<Finding> {

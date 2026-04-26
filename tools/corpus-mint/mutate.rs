@@ -56,15 +56,19 @@ pub fn run(root: &Path) -> Result<()> {
 
     for (seed_name, seed_path) in SEEDS {
         let path = root.join(seed_path);
-        let bytes = fs::read(&path)
-            .with_context(|| format!("failed to read seed {}", path.display()))?;
+        let bytes =
+            fs::read(&path).with_context(|| format!("failed to read seed {}", path.display()))?;
         let mut sha = Sha256::new();
         sha.update(&bytes);
         let seed_sha = format!("{:x}", sha.finalize());
 
         let mut rng = SmallRng::new(RNG_SEED ^ stable_hash(seed_name));
 
-        for schedule in [Schedule::BitFlip, Schedule::ByteReplace, Schedule::DlenPerturb] {
+        for schedule in [
+            Schedule::BitFlip,
+            Schedule::ByteReplace,
+            Schedule::DlenPerturb,
+        ] {
             let cases = generate(&bytes, schedule, &mut rng);
             let mut buckets: BTreeMap<String, usize> = BTreeMap::new();
             let mut persisted = 0;
@@ -190,12 +194,19 @@ fn sample_dlen_perturbations(seed: &[u8], rng: &mut SmallRng) -> Vec<MutatedCase
     let mut out = Vec::with_capacity(dlen_offsets.len() * 2);
     let mut case_id = 0usize;
     for offset in dlen_offsets {
-        for delta in [(rng.next_u64() & 0xF) as i32 + 1, -((rng.next_u64() & 0xF) as i32 + 1)] {
+        for delta in [
+            (rng.next_u64() & 0xF) as i32 + 1,
+            -((rng.next_u64() & 0xF) as i32 + 1),
+        ] {
             if offset + 4 > seed.len() {
                 continue;
             }
-            let original =
-                u32::from_be_bytes([seed[offset], seed[offset + 1], seed[offset + 2], seed[offset + 3]]);
+            let original = u32::from_be_bytes([
+                seed[offset],
+                seed[offset + 1],
+                seed[offset + 2],
+                seed[offset + 3],
+            ]);
             let new_value = original.wrapping_add(delta as u32);
             if new_value == original {
                 continue;
@@ -285,7 +296,12 @@ fn locate_dlen_offsets(seed: &[u8]) -> Vec<usize> {
             break;
         }
         offsets.push(cursor);
-        let dlen = u32::from_be_bytes([seed[cursor], seed[cursor + 1], seed[cursor + 2], seed[cursor + 3]]);
+        let dlen = u32::from_be_bytes([
+            seed[cursor],
+            seed[cursor + 1],
+            seed[cursor + 2],
+            seed[cursor + 3],
+        ]);
         cursor += 4;
         if dlen == 0xFFFF_FFFF {
             break;
@@ -318,7 +334,11 @@ struct SmallRng {
 
 impl SmallRng {
     fn new(seed: u64) -> Self {
-        let state = if seed == 0 { 0xDEAD_BEEF_DEAD_BEEF } else { seed };
+        let state = if seed == 0 {
+            0xDEAD_BEEF_DEAD_BEEF
+        } else {
+            seed
+        };
         Self { state }
     }
 

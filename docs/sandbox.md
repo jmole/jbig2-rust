@@ -1,11 +1,18 @@
 # External-binary sandbox
 
-`jbig2::util::sandbox` is the runner that every untrusted external decoder,
-encoder, and comparator goes through across `tools/conformance`,
+`jbig2::util::sandbox` is the runner that every untrusted external decoder
+and encoder goes through across `tools/conformance`,
 `tools/corpus-validator`, `tests/common/oracles.rs`, and
 `tests/jbig2dec_output_compat.rs`. Build steps (`make`, `mvn`,
 `./autogen.sh`, `./configure`), version probes (`-V`), and our own Rust
 binaries are intentionally **not** sandboxed.
+
+The conformance matrix used to also drive `imgcomp` for image
+comparison; that path was retired in favor of an in-tree comparator
+(see [`docs/conformance-matrix-encode-audit.md`](conformance-matrix-encode-audit.md)).
+The `Sandbox::for_comparator` preset described below is still provided
+for any future external comparator or interop tool that wants the same
+envelope as encoders.
 
 ## What it gives you
 
@@ -31,16 +38,18 @@ gets `KillReason::OutputBytes`.
 Use the named constructors – do **not** build `Limits` by hand at call
 sites:
 
-| Preset                     | Wall  | CPU  | Address space | Output cap |
-|----------------------------|-------|------|---------------|------------|
-| `Sandbox::for_decoder`     | 10 s  | 5 s  | 512 MiB       | 4 MiB      |
-| `Sandbox::for_encoder`     | 60 s  | 45 s | 1 GiB         | 8 MiB      |
-| `Sandbox::for_comparator`  | 60 s  | 45 s | 1 GiB         | 8 MiB      |
+| Preset                     | Wall  | CPU  | Address space | Output cap | In use? |
+|----------------------------|-------|------|---------------|------------|---------|
+| `Sandbox::for_decoder`     | 10 s  | 5 s  | 512 MiB       | 4 MiB      | yes     |
+| `Sandbox::for_encoder`     | 60 s  | 45 s | 1 GiB         | 8 MiB      | yes     |
+| `Sandbox::for_comparator`  | 60 s  | 45 s | 1 GiB         | 8 MiB      | available, not currently wired |
 
 Decoders get the strictest envelope because they are the targets of
-hostile or fuzzed bitstreams. Encoders / comparators (`imgcomp`, ITU
-`jbig2 -encode`, `jbig2enc`) are looser to accommodate slow reference
-implementations.
+hostile or fuzzed bitstreams. Encoders (ITU `jbig2 -encode`, `jbig2enc`)
+are looser to accommodate slow reference implementations. The
+comparator preset shares the encoder envelope and is kept as an
+available preset for future external image comparators or interop
+tooling; the conformance matrix performs comparisons in-process.
 
 ## Kill reasons
 
@@ -108,7 +117,8 @@ parsed once per `Sandbox::detect()` call.
 
 ## Adding a new external tool
 
-1. Pick the right preset (decoder vs encoder vs comparator).
+1. Pick the right preset (decoder vs encoder; reuse `for_comparator`
+   for an external image comparator if one is reintroduced).
 2. Declare every input path with `ro_path` and every output / scratch
    directory with `rw_path`.
 3. Route the call through `run_external` in

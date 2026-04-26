@@ -32,7 +32,10 @@ impl Check for SegmentNumberOrder {
     }
 
     fn cite(&self) -> SpecCite {
-        SpecCite::t88("7.2.1", "Segment numbers shall be assigned in ascending order.")
+        SpecCite::t88(
+            "7.2.1",
+            "Segment numbers shall be assigned in ascending order.",
+        )
     }
 
     fn run(&self, _ctx: &CheckCtx, tree: &SegmentTree) -> Vec<Finding> {
@@ -88,7 +91,10 @@ impl Check for ReferredCountEncoding {
     }
 
     fn cite(&self) -> SpecCite {
-        SpecCite::t88("7.2.3", "Values 5 and 6 of the three-bit referred-to segment count field are reserved.")
+        SpecCite::t88(
+            "7.2.3",
+            "Values 5 and 6 of the three-bit referred-to segment count field are reserved.",
+        )
     }
 
     fn run(&self, _ctx: &CheckCtx, tree: &SegmentTree) -> Vec<Finding> {

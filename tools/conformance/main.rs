@@ -1,15 +1,15 @@
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
-use std::fs::{self, File};
+use std::fs;
 use std::io::{Cursor, IsTerminal};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 use jbig2::util::sandbox::{KillReason, Sandbox, SandboxOutcome};
+use jbig2::validator::{self as v88, Lens as ValidatorLens};
 use jbig2::{
     Bitmap, Coding, EncoderConfig, GenericTemplate, Jbig2Decoder, Jbig2Encoder, Mode, RgbBitmap,
 };
-use jbig2::validator::{self as v88, Lens as ValidatorLens};
 use serde::Deserialize;
 
 /// Classification of an external C/Java binary so the sandbox can apply
@@ -21,8 +21,6 @@ enum ExternalKind {
     Decoder,
     /// Read trusted bitmap, produce JBIG2. Looser limits.
     Encoder,
-    /// Compare two decoded bitmaps. Looser limits.
-    Comparator,
 }
 
 /// Run an external binary inside the configured sandbox and translate
@@ -37,7 +35,6 @@ fn run_external(
     let sandbox = match kind {
         ExternalKind::Decoder => &tools.sandbox_decoder,
         ExternalKind::Encoder => &tools.sandbox_encoder,
-        ExternalKind::Comparator => &tools.sandbox_comparator,
     };
     let outcome = sandbox
         .run(cmd)
@@ -706,13 +703,11 @@ struct Tools {
     java_cmd: Option<Vec<OsString>>,
     sandbox_decoder: Sandbox,
     sandbox_encoder: Sandbox,
-    sandbox_comparator: Sandbox,
 }
 
 #[derive(Clone)]
 struct T88Tools {
     jbig2: PathBuf,
-    imgcomp: PathBuf,
 }
 
 impl Tools {
@@ -741,7 +736,6 @@ impl Tools {
             java_cmd: java_cmd(root),
             sandbox_decoder: mk(Sandbox::for_decoder()),
             sandbox_encoder: mk(Sandbox::for_encoder()),
-            sandbox_comparator: mk(Sandbox::for_comparator()),
         }
     }
 }
@@ -832,24 +826,6 @@ fn run_encode_matrix(
     tools: &Tools,
     target: Target,
 ) -> Result<Matrix, String> {
-    let Some(t88) = &tools.itu_t88 else {
-        return Ok(Matrix {
-            phase: PhaseLabel::Encode,
-            subtitle: "oracle = itu-t88 jbig2 + imgcomp -m mse, vs source BMP".to_string(),
-            columns: encode_sources(root)
-                .iter()
-                .map(|s| s.label.to_string())
-                .collect(),
-            rows: vec![MatrixRow {
-                label: "encode oracle".to_string(),
-                cells: encode_sources(root)
-                    .iter()
-                    .map(|_| Cell::skip("missing itu-t88 oracle"))
-                    .collect(),
-            }],
-        });
-    };
-
     let sources = encode_sources(root);
     let rows = encode_rows(target);
     let mut matrix_rows = Vec::new();
@@ -860,26 +836,7 @@ fn run_encode_matrix(
             let cell = match should_skip_encode(row, source) {
                 Some(reason) => Cell::blank(reason),
                 None => match encode_with(row, source, workdir, tools) {
-                    EncodeAttempt::Bytes(bytes) => {
-                        let validator_token = validator_oracle_token(&bytes);
-                        match oracle_decode_and_compare(tools, t88, &bytes, source, workdir, row.label) {
-                            Ok(mse) if mse == 0.0 => Cell::ok(annotate_with_validator(
-                                "mse=0",
-                                &validator_token,
-                            )),
-                            Ok(mse) => Cell::lossy(annotate_with_validator(
-                                &format!("mse={}", format_mse(mse)),
-                                &validator_token,
-                            )),
-                            Err(err) => Cell::fail(
-                                row.is_ours,
-                                annotate_with_validator(
-                                    &format!("FAIL(dec: {})", flatten_msg(&err)),
-                                    &validator_token,
-                                ),
-                            ),
-                        }
-                    }
+                    EncodeAttempt::Bytes(bytes) => cell_for_encoded_bytes(row, source, &bytes),
                     EncodeAttempt::Skip(reason) => Cell::skip(reason),
                     EncodeAttempt::Fail(err) => {
                         Cell::fail(row.is_ours, format!("FAIL(enc: {})", flatten_msg(&err)))
@@ -896,7 +853,9 @@ fn run_encode_matrix(
 
     Ok(Matrix {
         phase: PhaseLabel::Encode,
-        subtitle: "oracle = itu-t88 jbig2 + imgcomp -m mse, vs source BMP".to_string(),
+        subtitle:
+            "oracle = jbig2::validator (StrictT88) + jbig2::Jbig2Decoder roundtrip vs source BMP"
+                .to_string(),
         columns: sources.iter().map(|s| s.label.to_string()).collect(),
         rows: matrix_rows,
     })
@@ -964,6 +923,21 @@ struct EncodeRow {
     label: &'static str,
     kind: EncodeKind,
     is_ours: bool,
+    expectation: EncodeExpectation,
+}
+
+/// Per-row roundtrip contract. `Lossless` requires bit-exact pixel match
+/// against the source BMP. `Lossy` accepts a non-zero diff up to the
+/// stated ratio (`diff / total`); above the ratio the cell fails.
+///
+/// The lossy budgets here are intentionally larger than observed
+/// pixel diffs in `docs/conformance-matrix-encode-audit.md` so that
+/// transient noise does not trip the matrix, but small enough that a
+/// real regression in the encoder will exceed the budget.
+#[derive(Clone, Copy)]
+enum EncodeExpectation {
+    Lossless,
+    Lossy { max_diff_ratio: f64 },
 }
 
 #[derive(Clone, Copy)]
@@ -975,47 +949,84 @@ enum EncodeKind {
 }
 
 fn encode_rows(target: Target) -> Vec<EncodeRow> {
-    let rust = |label: &'static str, cfg: fn() -> EncoderConfig| EncodeRow {
-        label,
-        kind: EncodeKind::Rust(cfg),
-        is_ours: true,
-    };
-    let system = |label: &'static str, args: &'static [&'static str]| EncodeRow {
+    let rust =
+        |label: &'static str, cfg: fn() -> EncoderConfig, expectation: EncodeExpectation| {
+            EncodeRow {
+                label,
+                kind: EncodeKind::Rust(cfg),
+                is_ours: true,
+                expectation,
+            }
+        };
+    let system = |label: &'static str,
+                  args: &'static [&'static str],
+                  expectation: EncodeExpectation| EncodeRow {
         label,
         kind: EncodeKind::SystemJbig2enc(args),
         is_ours: false,
+        expectation,
     };
-    let vendor = |label: &'static str, args: &'static [&'static str]| EncodeRow {
+    let vendor = |label: &'static str,
+                  args: &'static [&'static str],
+                  expectation: EncodeExpectation| EncodeRow {
         label,
         kind: EncodeKind::VendorJbig2enc(args),
         is_ours: false,
+        expectation,
     };
     let t88 = |label: &'static str, ini: Option<&'static str>| EncodeRow {
         label,
         kind: EncodeKind::ItuT88(ini),
         is_ours: false,
+        expectation: EncodeExpectation::Lossless,
     };
+    // Lossy budgets:
+    //   - `symbol_lossy_t85` (Rust): observed max ~0.126% on F01_200; budget 1%.
+    //   - `jbig2enc -s -d -t 0.85` family (system + vendor): observed max
+    //     ~5.4% on codeStreamTest2; budget 10%.
+    //   - `jbig2enc -s -r -d -t 0.85` family: refinement is intended to
+    //     tighten the lossy substitution but upstream marks it broken,
+    //     so we treat it as lossy here too. Budget shares the symbol-mode
+    //     ceiling so a future upstream fix does not silently get a
+    //     bit-exact contract it cannot meet.
+    let lossy_symbol_rust = EncodeExpectation::Lossy {
+        max_diff_ratio: 0.01,
+    };
+    let lossy_symbol_jbig2enc = EncodeExpectation::Lossy {
+        max_diff_ratio: 0.10,
+    };
+    let lossless = EncodeExpectation::Lossless;
     let all = [
-        rust("rust:fast", EncoderConfig::fast),
-        rust("rust:balanced", EncoderConfig::balanced),
-        rust("rust:max_compression", EncoderConfig::max_compression),
-        rust("rust:generic_t0_no_tpgd", generic_t0_no_tpgd),
-        rust("rust:generic_t0_tpgd", generic_t0_tpgd),
-        rust("rust:symbol_lossy_t85", symbol_lossy_t85),
-        system("system-binary:default", &[]),
-        system("system-binary:-d", &["-d"]),
+        rust("rust:fast", EncoderConfig::fast, lossless),
+        rust("rust:balanced", EncoderConfig::balanced, lossless),
+        rust("rust:max_compression", EncoderConfig::max_compression, lossless),
+        rust("rust:generic_t0_no_tpgd", generic_t0_no_tpgd, lossless),
+        rust("rust:generic_t0_tpgd", generic_t0_tpgd, lossless),
+        rust("rust:symbol_lossy_t85", symbol_lossy_t85, lossy_symbol_rust),
+        system("system-binary:default", &[], lossless),
+        system("system-binary:-d", &["-d"], lossless),
         system(
             "system-binary:-s -r -d -t 0.85",
             &["-s", "-r", "-d", "-t", "0.85"],
+            lossy_symbol_jbig2enc,
         ),
-        system("system-binary:-s -d -t 0.85", &["-s", "-d", "-t", "0.85"]),
-        vendor("jbig2enc:default", &[]),
-        vendor("jbig2enc:-d", &["-d"]),
+        system(
+            "system-binary:-s -d -t 0.85",
+            &["-s", "-d", "-t", "0.85"],
+            lossy_symbol_jbig2enc,
+        ),
+        vendor("jbig2enc:default", &[], lossless),
+        vendor("jbig2enc:-d", &["-d"], lossless),
         vendor(
             "jbig2enc:-s -r -d -t 0.85",
             &["-s", "-r", "-d", "-t", "0.85"],
+            lossy_symbol_jbig2enc,
         ),
-        vendor("jbig2enc:-s -d -t 0.85", &["-s", "-d", "-t", "0.85"]),
+        vendor(
+            "jbig2enc:-s -d -t 0.85",
+            &["-s", "-d", "-t", "0.85"],
+            lossy_symbol_jbig2enc,
+        ),
         t88("itu-t88:default", None),
         t88("itu-t88:Param2.ini", Some("jbig2_Param2.ini")),
         t88("itu-t88:Param3.ini", Some("jbig2_Param3.ini")),
@@ -1406,7 +1417,13 @@ fn should_skip_encode(row: EncodeRow, source: &EncodeSource) -> Option<&'static 
                 Some("ini scoped")
             }
         }),
-        EncodeKind::ItuT88(None) => None,
+        EncodeKind::ItuT88(None) => {
+            if source.is_color {
+                Some("color: itu-t88 default emits mono")
+            } else {
+                None
+            }
+        }
     }
 }
 
@@ -1454,6 +1471,221 @@ fn encode_with(
     .unwrap_or_else(EncodeAttempt::Fail)
 }
 
+struct ValidatorOutcome {
+    errors: usize,
+    token: String,
+}
+
+/// Pixel-level comparison result for two `PageImage` values. Shared
+/// between the encode roundtrip oracle and any future interop matrix
+/// that needs to score "did decoder X reproduce the source?" without
+/// inventing a parallel verdict vocabulary.
+///
+/// Decode-load and decode-execution failures are not represented here;
+/// callers should wrap this in their own enum for those cases (see
+/// [`RoundtripVerdict`] for an example).
+enum PageDiff {
+    /// Same dimensions, every pixel matches. `total` is the pixel count.
+    Bitexact { total: u64 },
+    /// Same dimensions, some pixels differ. `diff` counts mismatched
+    /// pixels (mono: bit XOR popcount, RGB: per-pixel inequality).
+    Lossy { diff: u64, total: u64 },
+    /// Width or height differs.
+    WrongDims {
+        actual: (u32, u32),
+        expected: (u32, u32),
+    },
+    /// One side is mono and the other is RGB. The strings are stable
+    /// labels (`"mono"` or `"rgb"`) suitable for matrix tokens.
+    WrongPixelFormat {
+        actual: &'static str,
+        expected: &'static str,
+    },
+}
+
+enum RoundtripVerdict {
+    /// Source loaded and the encoded bytes decoded; result is a
+    /// `PageDiff` describing how the decoded page compares to the
+    /// source bitmap.
+    Diff(PageDiff),
+    /// Source load, decode parse, or decode page extraction failed.
+    DecodeFail(String),
+}
+
+/// Lens used by the encode matrix's structural oracle. Pinned to strict
+/// T.88 so that any encoder we run is held to the published specification
+/// regardless of downstream tolerance. Future interop work that scores
+/// streams against decoder-specific lenses should pass its own value to
+/// [`run_validator`] rather than reusing this constant.
+const ENCODE_VALIDATOR_LENS: ValidatorLens = ValidatorLens::StrictT88;
+
+/// Number of distinct check IDs the matrix surfaces in a `BAD(...)` token.
+const ENCODE_VALIDATOR_ID_LIMIT: usize = 3;
+
+fn cell_for_encoded_bytes(row: EncodeRow, source: &EncodeSource, bytes: &[u8]) -> Cell {
+    let v88 = run_validator(bytes, ENCODE_VALIDATOR_LENS);
+    let rt = roundtrip_with_rust(bytes, source);
+    let text = encode_cell_text(&v88, &rt);
+
+    if v88.errors > 0 {
+        return Cell::fail(row.is_ours, text);
+    }
+
+    match &rt {
+        RoundtripVerdict::DecodeFail(_) => Cell::fail(row.is_ours, text),
+        RoundtripVerdict::Diff(diff) => match diff {
+            PageDiff::WrongDims { .. } | PageDiff::WrongPixelFormat { .. } => {
+                Cell::fail(row.is_ours, text)
+            }
+            PageDiff::Bitexact { .. } => Cell::ok(text),
+            PageDiff::Lossy { diff, total } => match row.expectation {
+                EncodeExpectation::Lossless => Cell::fail(row.is_ours, text),
+                EncodeExpectation::Lossy { max_diff_ratio } => {
+                    let pct = if *total == 0 {
+                        1.0
+                    } else {
+                        *diff as f64 / *total as f64
+                    };
+                    if pct > max_diff_ratio {
+                        Cell::fail(row.is_ours, text)
+                    } else {
+                        Cell::lossy(text)
+                    }
+                }
+            },
+        },
+    }
+}
+
+fn run_validator(bytes: &[u8], lens: ValidatorLens) -> ValidatorOutcome {
+    let report = v88::validate(bytes, lens);
+    ValidatorOutcome {
+        errors: report.error_count(),
+        token: report.render_matrix_cell_with_error_ids(ENCODE_VALIDATOR_ID_LIMIT),
+    }
+}
+
+fn roundtrip_with_rust(bytes: &[u8], source: &EncodeSource) -> RoundtripVerdict {
+    let expected = match load_bmp_image(&source.path) {
+        Ok(image) => image,
+        Err(err) => return RoundtripVerdict::DecodeFail(format!("load source: {err}")),
+    };
+    let mut dec = match Jbig2Decoder::new(Cursor::new(bytes)) {
+        Ok(dec) => dec,
+        Err(err) => return RoundtripVerdict::DecodeFail(format!("parse: {err}")),
+    };
+    let page = match dec.decode_page(1) {
+        Ok(page) => page,
+        Err(err) => return RoundtripVerdict::DecodeFail(format!("decode page 1: {err}")),
+    };
+    let actual = match page.rgb_bitmap {
+        Some(rgb) => PageImage::Rgb(rgb),
+        None => PageImage::Mono(page.bitmap),
+    };
+    RoundtripVerdict::Diff(diff_pages(&actual, &expected))
+}
+
+fn encode_cell_text(v88: &ValidatorOutcome, rt: &RoundtripVerdict) -> String {
+    format!("v88={} rt={}", v88.token, roundtrip_token(rt))
+}
+
+fn roundtrip_token(rt: &RoundtripVerdict) -> String {
+    match rt {
+        RoundtripVerdict::Diff(diff) => page_diff_token(diff),
+        RoundtripVerdict::DecodeFail(err) => format!("err({})", flatten_msg(err)),
+    }
+}
+
+fn page_diff_token(diff: &PageDiff) -> String {
+    match diff {
+        PageDiff::Bitexact { total } => format!("0/{total}"),
+        PageDiff::Lossy { diff, total } => {
+            let pct = if *total == 0 {
+                100.0
+            } else {
+                (*diff as f64 / *total as f64) * 100.0
+            };
+            format!("{diff}/{total}({pct:.3}%)")
+        }
+        PageDiff::WrongDims { actual, expected } => format!(
+            "dims({}x{}!={}x{})",
+            actual.0, actual.1, expected.0, expected.1
+        ),
+        PageDiff::WrongPixelFormat { actual, expected } => {
+            format!("fmt({actual}!={expected})")
+        }
+    }
+}
+
+/// Compare two `PageImage` values pixel-by-pixel and return a
+/// [`PageDiff`]. This is the single source of truth for "same image?"
+/// across the encode oracle, decode comparator, and any future interop
+/// matrix. Format mismatches return [`PageDiff::WrongPixelFormat`]; the
+/// decode-phase comparator wraps this with a luma fallback when it
+/// wants cross-format comparison.
+fn diff_pages(actual: &PageImage, expected: &PageImage) -> PageDiff {
+    match (actual, expected) {
+        (PageImage::Mono(a), PageImage::Mono(e)) => diff_mono(a, e),
+        (PageImage::Rgb(a), PageImage::Rgb(e)) => diff_rgb(a, e),
+        (PageImage::Mono(_), PageImage::Rgb(_)) => PageDiff::WrongPixelFormat {
+            actual: "mono",
+            expected: "rgb",
+        },
+        (PageImage::Rgb(_), PageImage::Mono(_)) => PageDiff::WrongPixelFormat {
+            actual: "rgb",
+            expected: "mono",
+        },
+    }
+}
+
+fn diff_mono(actual: &Bitmap, expected: &Bitmap) -> PageDiff {
+    if actual.width() != expected.width() || actual.height() != expected.height() {
+        return PageDiff::WrongDims {
+            actual: (actual.width(), actual.height()),
+            expected: (expected.width(), expected.height()),
+        };
+    }
+    let mut diff = 0u64;
+    for y in 0..actual.height() as usize {
+        diff += actual
+            .row(y)
+            .iter()
+            .zip(expected.row(y))
+            .map(|(left, right)| (left ^ right).count_ones() as u64)
+            .sum::<u64>();
+    }
+    let total = actual.width() as u64 * actual.height() as u64;
+    if diff == 0 {
+        PageDiff::Bitexact { total }
+    } else {
+        PageDiff::Lossy { diff, total }
+    }
+}
+
+fn diff_rgb(actual: &RgbBitmap, expected: &RgbBitmap) -> PageDiff {
+    if actual.width() != expected.width() || actual.height() != expected.height() {
+        return PageDiff::WrongDims {
+            actual: (actual.width(), actual.height()),
+            expected: (expected.width(), expected.height()),
+        };
+    }
+    let mut diff = 0u64;
+    for y in 0..actual.height() as usize {
+        diff += actual
+            .row(y)
+            .chunks_exact(3)
+            .zip(expected.row(y).chunks_exact(3))
+            .filter(|(left, right)| left != right)
+            .count() as u64;
+    }
+    let total = actual.width() as u64 * actual.height() as u64;
+    if diff == 0 {
+        PageDiff::Bitexact { total }
+    } else {
+        PageDiff::Lossy { diff, total }
+    }
+}
+
 fn encode_rust(source: &EncodeSource, cfg: EncoderConfig) -> Result<Vec<u8>, String> {
     let image = load_bmp_image(&source.path)?;
     let PageImage::Mono(bitmap) = image else {
@@ -1467,6 +1699,23 @@ fn encode_rust(source: &EncodeSource, cfg: EncoderConfig) -> Result<Vec<u8>, Str
     Ok(out)
 }
 
+/// Run `jbig2enc <args> <source.bmp>` under the encoder sandbox and
+/// take the encoded JBIG2 stream from **stdout**.
+///
+/// Contract assumed here: `jbig2enc` (both the system and vendored
+/// builds wired into the matrix) writes a pure JBIG2 byte stream to
+/// stdout and routes diagnostics to stderr. The sandbox's
+/// `output_bytes` cap (8 MiB for encoders) is therefore the upper bound
+/// on the encoded stream we will accept; if a future fixture or option
+/// flag exceeds that, surface it as `OUTCAP` rather than silently
+/// truncating, and consider switching this row to file-output capture
+/// (the `encode_t88` shape).
+///
+/// If a future binary mixes diagnostic text into stdout, switch this
+/// encoder to file-output capture rather than trying to filter
+/// stdout. There is intentionally no shared abstraction between the
+/// stdout-capture and file-capture encoder shapes today; the audit at
+/// `docs/conformance-matrix-encode-audit.md` calls out the divergence.
 fn encode_jbig2enc(
     tools: &Tools,
     bin: &Path,
@@ -1475,12 +1724,14 @@ fn encode_jbig2enc(
     workdir: &Path,
 ) -> Result<Vec<u8>, String> {
     fs::create_dir_all(workdir).map_err(|err| format!("create {workdir:?}: {err}"))?;
-    let out = workdir.join(format!("{}.jb2", safe_name(source.label)));
-    let file = File::create(&out).map_err(|err| format!("create {out:?}: {err}"))?;
     let mut cmd = Command::new(bin);
-    cmd.args(args).arg(&source.path).stdout(Stdio::from(file));
-    run_external(tools, cmd, "jbig2enc encode", ExternalKind::Encoder)?;
-    fs::read(&out).map_err(|err| format!("read {out:?}: {err}"))
+    cmd.args(args).arg(&source.path);
+    let output = run_external(tools, cmd, "jbig2enc encode", ExternalKind::Encoder)?;
+    if output.stdout.is_empty() {
+        Err("jbig2enc encode: empty stdout".to_string())
+    } else {
+        Ok(output.stdout)
+    }
 }
 
 fn encode_t88(
@@ -1491,6 +1742,9 @@ fn encode_t88(
     workdir: &Path,
 ) -> Result<Vec<u8>, String> {
     fs::create_dir_all(workdir).map_err(|err| format!("create {workdir:?}: {err}"))?;
+    if ini.is_some() {
+        copy_t88_symbol_helpers(workdir)?;
+    }
     let input_stem = strip_ext(&source.path)?;
     let out_stem = workdir.join(format!(
         "{}-{}",
@@ -1515,61 +1769,32 @@ fn encode_t88(
     fs::read(&out).map_err(|err| format!("read {out:?}: {err}"))
 }
 
-fn oracle_decode_and_compare(
-    tools: &Tools,
-    t88: &T88Tools,
-    bytes: &[u8],
-    source: &EncodeSource,
-    workdir: &Path,
-    label: &str,
-) -> Result<f64, String> {
-    let dir = workdir.join("oracle").join(safe_name(label));
-    reset_dir(&dir)?;
-    let input_stem = dir.join("input");
-    let input = input_stem.with_extension("jb2");
-    fs::write(&input, bytes).map_err(|err| format!("write oracle input {input:?}: {err}"))?;
-    let decoded_stem = dir.join("decoded");
-    let mut dec = Command::new(&t88.jbig2);
-    dec.arg("-i")
-        .arg(&input_stem)
-        .arg("-f")
-        .arg("jb2")
-        .arg("-o")
-        .arg(&decoded_stem)
-        .arg("-F")
-        .arg("bmp")
-        .current_dir(&dir);
-    run_external(tools, dec, "itu-t88 oracle decode", ExternalKind::Decoder)?;
+/// Helper bitmaps the checked-in `jbig2_Param*.ini` files reference by
+/// name. The ITU sample encoder reads them from the current working
+/// directory before encoding, so we stage them next to the input under
+/// our scratch dir before invoking the sandboxed binary.
+///
+/// Keep this list aligned with the `Param*.ini` profiles wired into
+/// [`encode_rows`]; if a new profile references a helper not listed
+/// here, [`copy_t88_symbol_helpers`] will return a clear error rather
+/// than letting the encoder crash with a generic file-not-found error
+/// inside the sandbox.
+const T88_SYMBOL_HELPERS: &[&str] = &["Sym000.bmp", "Sym001.bmp", "Sym002.bmp"];
 
-    let source_stem = strip_ext(&source.path)?;
-    let target_stem = decoded_stem.with_file_name("decoded00");
-    let mut cmp = Command::new(&t88.imgcomp);
-    cmp.arg("-t")
-        .arg(source_stem)
-        .arg("-f")
-        .arg("bmp")
-        .arg("-T")
-        .arg(&target_stem)
-        .arg("-F")
-        .arg("bmp")
-        .arg("-m")
-        .arg("mse")
-        .current_dir(&dir);
-    let output = run_external(tools, cmp, "itu-t88 imgcomp", ExternalKind::Comparator)?;
-    parse_distortion(&String::from_utf8_lossy(&output.stdout))
-}
-
-fn parse_distortion(stdout: &str) -> Result<f64, String> {
-    let marker = "Distortion=";
-    let Some(start) = stdout.find(marker) else {
-        return Err(format!("imgcomp output missing Distortion: {stdout:?}"));
-    };
-    let rest = &stdout[start + marker.len()..];
-    let end = rest.find(',').unwrap_or(rest.len());
-    rest[..end]
-        .trim()
-        .parse::<f64>()
-        .map_err(|err| format!("parse Distortion from {stdout:?}: {err}"))
+fn copy_t88_symbol_helpers(workdir: &Path) -> Result<(), String> {
+    let test_dir = t88_test_dir();
+    for name in T88_SYMBOL_HELPERS {
+        let src = test_dir.join(name);
+        if !src.is_file() {
+            return Err(format!(
+                "missing ITU symbol helper: expected {src:?}; if a Param*.ini profile was \
+                 added or renamed, update T88_SYMBOL_HELPERS in tools/conformance/main.rs",
+            ));
+        }
+        let dest = workdir.join(name);
+        fs::copy(&src, &dest).map_err(|err| format!("copy {src:?} to {dest:?}: {err}"))?;
+    }
+    Ok(())
 }
 
 fn decode_with_rust(path: &Path, expected_pages: usize) -> Result<Vec<PageImage>, String> {
@@ -1596,7 +1821,11 @@ fn decode_with_jbig2dec_bin(
     output: &Path,
 ) -> Result<Vec<PageImage>, String> {
     let mut cmd = Command::new(bin);
-    cmd.arg("--format").arg("pbm").arg("-o").arg(output).arg(input);
+    cmd.arg("--format")
+        .arg("pbm")
+        .arg("-o")
+        .arg(output)
+        .arg(input);
     let out = run_external(tools, cmd, "jbig2dec decode", ExternalKind::Decoder)?;
     let diagnostics = format!(
         "{}{}",
@@ -1623,7 +1852,12 @@ fn decode_with_java(
     };
     let mut command = Command::new(program);
     command.args(&cmd[1..]).arg(input).arg(output);
-    run_external(tools, command, "jbig2-imageio decode", ExternalKind::Decoder)?;
+    run_external(
+        tools,
+        command,
+        "jbig2-imageio decode",
+        ExternalKind::Decoder,
+    )?;
     parse_pbm_sequence(output)
 }
 
@@ -1727,41 +1961,32 @@ fn compare_page(actual: &PageImage, expected: &PageImage) -> Result<(), String> 
 }
 
 fn compare_mono(actual: &Bitmap, expected: &Bitmap) -> Result<(), String> {
-    if actual.width() != expected.width() {
-        return Err(format!("width {} vs {}", actual.width(), expected.width()));
-    }
-    if actual.height() != expected.height() {
-        return Err(format!(
-            "height {} vs {}",
-            actual.height(),
-            expected.height()
-        ));
-    }
-    for y in 0..actual.height() as usize {
-        if actual.row(y) != expected.row(y) {
-            return Err(format!("row {y}"));
-        }
-    }
-    Ok(())
+    page_diff_to_strict(diff_mono(actual, expected))
 }
 
 fn compare_rgb(actual: &RgbBitmap, expected: &RgbBitmap) -> Result<(), String> {
-    if actual.width() != expected.width() {
-        return Err(format!("width {} vs {}", actual.width(), expected.width()));
-    }
-    if actual.height() != expected.height() {
-        return Err(format!(
-            "height {} vs {}",
-            actual.height(),
-            expected.height()
-        ));
-    }
-    for y in 0..actual.height() as usize {
-        if actual.row(y) != expected.row(y) {
-            return Err(format!("row {y}"));
+    page_diff_to_strict(diff_rgb(actual, expected))
+}
+
+/// Translate a [`PageDiff`] into the strict `Result<(), String>` shape
+/// the decode phase has rendered for the lifetime of the conformance
+/// matrix. Any non-bit-exact result is an error here; lossy budgets are
+/// an encode-phase concept and do not apply to oracle comparisons.
+fn page_diff_to_strict(diff: PageDiff) -> Result<(), String> {
+    match diff {
+        PageDiff::Bitexact { .. } => Ok(()),
+        PageDiff::Lossy { diff, total } => Err(format!("diff {diff}/{total}")),
+        PageDiff::WrongDims { actual, expected } => {
+            if actual.0 != expected.0 {
+                Err(format!("width {} vs {}", actual.0, expected.0))
+            } else {
+                Err(format!("height {} vs {}", actual.1, expected.1))
+            }
+        }
+        PageDiff::WrongPixelFormat { actual, expected } => {
+            Err(format!("format {actual} vs {expected}"))
         }
     }
-    Ok(())
 }
 
 fn rgb_to_mono(rgb: &RgbBitmap) -> Bitmap {
@@ -2458,17 +2683,16 @@ fn t88_tools(root: &Path) -> Option<T88Tools> {
         .join("JBIG2_SampleSoftware-A20180829");
     let source = dir.join("source");
     let jbig2 = source.join("jbig2");
-    let imgcomp = source.join("imgcomp");
     let mut build_error = None;
-    if !(jbig2.is_file() && imgcomp.is_file()) {
+    if !jbig2.is_file() {
         let mut make = Command::new("make");
-        make.arg("jbig2").arg("imgcomp").current_dir(&dir);
+        make.arg("jbig2").current_dir(&dir);
         if let Some(err) = setup_output(make, "itu-t88 make") {
             build_error = Some(err);
         }
     }
-    if jbig2.is_file() && imgcomp.is_file() {
-        Some(T88Tools { jbig2, imgcomp })
+    if jbig2.is_file() {
+        Some(T88Tools { jbig2 })
     } else {
         report_setup_failure("itu-t88", build_error);
         None
@@ -2591,21 +2815,4 @@ fn safe_name(s: &str) -> String {
 
 fn flatten_msg(err: &str) -> String {
     err.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-fn format_mse(mse: f64) -> String {
-    if mse.fract() == 0.0 {
-        format!("{mse:.0}")
-    } else {
-        format!("{mse:.6}")
-    }
-}
-
-fn validator_oracle_token(bytes: &[u8]) -> String {
-    let report = v88::validate(bytes, ValidatorLens::StrictT88);
-    report.render_matrix_cell()
-}
-
-fn annotate_with_validator(verdict: &str, validator_token: &str) -> String {
-    format!("{verdict} v88={validator_token}")
 }

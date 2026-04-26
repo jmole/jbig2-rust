@@ -61,7 +61,10 @@ impl Check for PageTerminators {
     }
 
     fn cite(&self) -> SpecCite {
-        SpecCite::t88("7.4.9", "An end-of-page segment shall indicate the end of a page.")
+        SpecCite::t88(
+            "7.4.9",
+            "An end-of-page segment shall indicate the end of a page.",
+        )
     }
 
     fn run(&self, _ctx: &CheckCtx, tree: &SegmentTree) -> Vec<Finding> {
@@ -80,9 +83,10 @@ impl Check for PageTerminators {
         pages
             .difference(&ended)
             .filter_map(|page| {
-                tree.segments
-                    .iter()
-                    .find(|node| node.header.segment_type == Some(SegmentType::PageInformation) && node.header.page_association == *page)
+                tree.segments.iter().find(|node| {
+                    node.header.segment_type == Some(SegmentType::PageInformation)
+                        && node.header.page_association == *page
+                })
             })
             .map(|node| {
                 finding(
@@ -103,7 +107,10 @@ impl Check for EofPlacement {
     }
 
     fn cite(&self) -> SpecCite {
-        SpecCite::t88("7.4.11", "The end-of-file segment shall occur after all other segments in the JBIG2 file.")
+        SpecCite::t88(
+            "7.4.11",
+            "The end-of-file segment shall occur after all other segments in the JBIG2 file.",
+        )
     }
 
     fn run(&self, _ctx: &CheckCtx, tree: &SegmentTree) -> Vec<Finding> {

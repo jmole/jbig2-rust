@@ -31,6 +31,9 @@ fn main() {
     }
     println!("diagnostics ({}):", tree.diagnostics.len());
     for d in &tree.diagnostics {
-        println!("  {} sev={:?} off={} {}", d.check_id, d.severity, d.byte_offset, d.message);
+        println!(
+            "  {} sev={:?} off={} {}",
+            d.check_id, d.severity, d.byte_offset, d.message
+        );
     }
 }

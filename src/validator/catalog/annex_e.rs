@@ -36,7 +36,9 @@ impl Check for ArithmeticBodyNonEmpty {
                         | Some(SegmentType::ImmediateLosslessGenericRefinementRegion)
                 )
             })
-            .filter(|node| !matches!(node.parsed, ParsedBody::PatternDictionary { .. }) && node.body.is_empty())
+            .filter(|node| {
+                !matches!(node.parsed, ParsedBody::PatternDictionary { .. }) && node.body.is_empty()
+            })
             .map(|node| {
                 finding(
                     self.id(),

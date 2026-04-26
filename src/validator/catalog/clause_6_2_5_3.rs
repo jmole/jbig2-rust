@@ -24,7 +24,9 @@ impl Check for AtPixelBodyLength {
         tree.segments
             .iter()
             .filter_map(|node| match node.parsed {
-                ParsedBody::GenericRegion { flags: Some(flags), .. } => Some((node, flags)),
+                ParsedBody::GenericRegion {
+                    flags: Some(flags), ..
+                } => Some((node, flags)),
                 _ => None,
             })
             .filter(|(node, flags)| {

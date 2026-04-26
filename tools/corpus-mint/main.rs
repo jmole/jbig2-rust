@@ -36,16 +36,66 @@ struct Fixture {
 
 fn synthetic_fixtures() -> Vec<Fixture> {
     vec![
-        Fixture { name: "7.2.3-reserved-ref-count", check_id: "T88-7.2.3-001", description: "reserved referred-count encoding", build: reserved_ref_count },
-        Fixture { name: "7.4.1-zero-region", check_id: "T88-7.4.1-001", description: "zero-width generic region", build: zero_region },
-        Fixture { name: "7.4.2-symbol-reserved-flags", check_id: "T88-7.4.2-001", description: "symbol dictionary reserved flags", build: symbol_reserved_flags },
-        Fixture { name: "7.4.2-sdrefagg-forward-reference", check_id: "T88-7.4.2-009", description: "SDREFAGG dictionary refers forward", build: sdrefagg_forward_ref },
-        Fixture { name: "7.4.3-sbnuminsts-zero", check_id: "T88-7.4.3-002", description: "text region with zero instances", build: zero_text_instances },
-        Fixture { name: "7.4.4-pattern-zero-size", check_id: "T88-7.4.4-001", description: "pattern dictionary with zero pattern width", build: pattern_zero_size },
-        Fixture { name: "7.4.6-tpgdon-template3", check_id: "T88-7.4.6-001", description: "generic region TPGDON set on template 3", build: generic_tpgdon_template3 },
-        Fixture { name: "7.4.7-refinement-reserved-flags", check_id: "T88-7.4.7-001", description: "refinement region reserved flag bits", build: refinement_reserved_flags },
-        Fixture { name: "7.4.12-empty-profiles", check_id: "T88-7.4.12-001", description: "empty profiles body", build: empty_profiles },
-        Fixture { name: "7.4.13-empty-table", check_id: "T88-7.4.13-001", description: "empty tables body", build: empty_tables },
+        Fixture {
+            name: "7.2.3-reserved-ref-count",
+            check_id: "T88-7.2.3-001",
+            description: "reserved referred-count encoding",
+            build: reserved_ref_count,
+        },
+        Fixture {
+            name: "7.4.1-zero-region",
+            check_id: "T88-7.4.1-001",
+            description: "zero-width generic region",
+            build: zero_region,
+        },
+        Fixture {
+            name: "7.4.2-symbol-reserved-flags",
+            check_id: "T88-7.4.2-001",
+            description: "symbol dictionary reserved flags",
+            build: symbol_reserved_flags,
+        },
+        Fixture {
+            name: "7.4.2-sdrefagg-forward-reference",
+            check_id: "T88-7.4.2-009",
+            description: "SDREFAGG dictionary refers forward",
+            build: sdrefagg_forward_ref,
+        },
+        Fixture {
+            name: "7.4.3-sbnuminsts-zero",
+            check_id: "T88-7.4.3-002",
+            description: "text region with zero instances",
+            build: zero_text_instances,
+        },
+        Fixture {
+            name: "7.4.4-pattern-zero-size",
+            check_id: "T88-7.4.4-001",
+            description: "pattern dictionary with zero pattern width",
+            build: pattern_zero_size,
+        },
+        Fixture {
+            name: "7.4.6-tpgdon-template3",
+            check_id: "T88-7.4.6-001",
+            description: "generic region TPGDON set on template 3",
+            build: generic_tpgdon_template3,
+        },
+        Fixture {
+            name: "7.4.7-refinement-reserved-flags",
+            check_id: "T88-7.4.7-001",
+            description: "refinement region reserved flag bits",
+            build: refinement_reserved_flags,
+        },
+        Fixture {
+            name: "7.4.12-empty-profiles",
+            check_id: "T88-7.4.12-001",
+            description: "empty profiles body",
+            build: empty_profiles,
+        },
+        Fixture {
+            name: "7.4.13-empty-table",
+            check_id: "T88-7.4.13-001",
+            description: "empty tables body",
+            build: empty_tables,
+        },
     ]
 }
 
@@ -58,7 +108,10 @@ pub(crate) fn write_fixture(
     fs::write(dir.join("stream.jb2"), stream)?;
     fs::write(
         dir.join("meta.toml"),
-        format!("description = {:?}\nprimary_check_id = {:?}\n", description, primary_check_id),
+        format!(
+            "description = {:?}\nprimary_check_id = {:?}\n",
+            description, primary_check_id
+        ),
     )?;
     let report = validate(stream, Lens::StrictT88);
     let ids = report
@@ -69,7 +122,10 @@ pub(crate) fn write_fixture(
         .join(", ");
     fs::write(
         dir.join("expected.toml"),
-        format!("primary_check_id = {:?}\ncheck_ids = [{}]\n", primary_check_id, ids),
+        format!(
+            "primary_check_id = {:?}\ncheck_ids = [{}]\n",
+            primary_check_id, ids
+        ),
     )
     .with_context(|| format!("write expected metadata for {}", dir.display()))?;
     Ok(())
@@ -82,7 +138,14 @@ fn base_file() -> Vec<u8> {
     out
 }
 
-fn segment(number: u32, flags: u8, ref_count_byte: u8, referred: &[u32], page: u8, body: &[u8]) -> Vec<u8> {
+fn segment(
+    number: u32,
+    flags: u8,
+    ref_count_byte: u8,
+    referred: &[u32],
+    page: u8,
+    body: &[u8],
+) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(&number.to_be_bytes());
     out.push(flags);

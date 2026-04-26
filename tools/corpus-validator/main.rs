@@ -188,12 +188,12 @@ fn resolve_decoders(root: &Path, args: &Args) -> Vec<DecoderConfig> {
             args_template: jbig2dec_args,
         });
     }
-    if let Some(path) = args
-        .itu_jbig2
-        .clone()
-        .or_else(|| candidate_path(&root.join(
-            "vendor/T-REC-T.88-201808/Software/JBIG2_SampleSoftware-A20180829/source/jbig2",
-        )))
+    if let Some(path) =
+        args.itu_jbig2.clone().or_else(|| {
+            candidate_path(&root.join(
+                "vendor/T-REC-T.88-201808/Software/JBIG2_SampleSoftware-A20180829/source/jbig2",
+            ))
+        })
     {
         out.push(DecoderConfig {
             name: "itu-jbig2",
@@ -228,7 +228,11 @@ fn itu_jbig2_args(stream: &Path) -> Vec<String> {
 }
 
 fn candidate_path(p: &Path) -> Option<PathBuf> {
-    if p.is_file() { Some(p.to_path_buf()) } else { None }
+    if p.is_file() {
+        Some(p.to_path_buf())
+    } else {
+        None
+    }
 }
 
 fn run_decoder_for_invalid(
@@ -276,9 +280,17 @@ fn run_decoder_for_invalid(
 #[allow(dead_code)]
 enum DecoderOutcome {
     Ok,
-    NonZeroExit { code: Option<i32>, signature: Option<String> },
-    SanitizerHit { signature: String },
-    Crash { signal: String, signature: Option<String> },
+    NonZeroExit {
+        code: Option<i32>,
+        signature: Option<String>,
+    },
+    SanitizerHit {
+        signature: String,
+    },
+    Crash {
+        signal: String,
+        signature: Option<String>,
+    },
     Timeout,
     SpawnError(String),
 }
@@ -468,10 +480,7 @@ impl CorpusReport {
 
     fn render_markdown(&self) -> String {
         let mut out = String::new();
-        out.push_str(&format!(
-            "# Corpus report (lens = {:?})\n\n",
-            self.lens
-        ));
+        out.push_str(&format!("# Corpus report (lens = {:?})\n\n", self.lens));
         out.push_str(&format!("Total fixtures: {}\n\n", self.fixtures.len()));
         let invalid_count = self.fixtures.iter().filter(|f| f.invalid).count();
         out.push_str(&format!("Validator-invalid: {}\n\n", invalid_count));

@@ -4,9 +4,9 @@
 //! wire format, builds a small structural tree, and runs clause-scoped checks
 //! without trying to reconstruct pixels.
 
+pub mod catalog;
 mod check;
 mod citation;
-pub mod catalog;
 mod lens;
 mod parse;
 mod report;

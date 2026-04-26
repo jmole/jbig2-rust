@@ -90,10 +90,7 @@ impl Report {
 
     /// Highest severity in the report.
     pub fn highest_severity(&self) -> Option<Severity> {
-        self.findings
-            .iter()
-            .map(|finding| finding.severity)
-            .max()
+        self.findings.iter().map(|finding| finding.severity).max()
     }
 
     /// True when findings are sorted by the public invariant.
@@ -168,25 +165,136 @@ impl Report {
         self.render_text()
     }
 
-    /// Short cell token for conformance matrix integration.
-    pub fn render_matrix_cell(&self) -> String {
-        let errors = self
-            .findings
+    /// Number of error-severity findings.
+    pub fn error_count(&self) -> usize {
+        self.findings
             .iter()
             .filter(|finding| finding.severity == Severity::Error)
-            .count();
+            .count()
+    }
+
+    /// Number of warning-severity findings.
+    pub fn warning_count(&self) -> usize {
+        self.findings
+            .iter()
+            .filter(|finding| finding.severity == Severity::Warning)
+            .count()
+    }
+
+    /// Short cell token for conformance matrix integration.
+    pub fn render_matrix_cell(&self) -> String {
+        let errors = self.error_count();
         if errors > 0 {
             return format!("BAD({errors})");
         }
-        let warnings = self
-            .findings
-            .iter()
-            .filter(|finding| finding.severity == Severity::Warning)
-            .count();
+        let warnings = self.warning_count();
         if warnings > 0 {
             format!("WARN({warnings})")
         } else {
             "OK".to_string()
         }
+    }
+
+    /// Same as [`Report::render_matrix_cell`], but when the report has
+    /// any error-severity findings the token is suffixed with up to
+    /// `id_limit` deduplicated `:CHECK-ID,CHECK-ID,...` entries so the
+    /// conformance matrix can show which checks fired without parsing
+    /// the full report.
+    ///
+    /// Consumers should prefer this over re-walking [`Report::findings`]
+    /// so the matrix vocabulary stays in one place.
+    pub fn render_matrix_cell_with_error_ids(&self, id_limit: usize) -> String {
+        let mut token = self.render_matrix_cell();
+        if id_limit == 0 || self.error_count() == 0 {
+            return token;
+        }
+        let mut seen = Vec::with_capacity(id_limit);
+        for finding in &self.findings {
+            if finding.severity != Severity::Error {
+                continue;
+            }
+            let id = finding.check_id.as_str();
+            if seen.iter().any(|existing| *existing == id) {
+                continue;
+            }
+            seen.push(id);
+            if seen.len() == id_limit {
+                break;
+            }
+        }
+        if !seen.is_empty() {
+            token.push(':');
+            token.push_str(&seen.join(","));
+        }
+        token
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::validator::{CheckId, SpecCite};
+
+    fn finding(check: &'static str, severity: Severity) -> Finding {
+        Finding::new(
+            CheckId(check),
+            severity,
+            0,
+            None,
+            None,
+            "synthetic",
+            SpecCite::t88("0.0", "synthetic"),
+        )
+    }
+
+    #[test]
+    fn matrix_cell_ok_when_empty() {
+        let report = Report::default();
+        assert_eq!(report.render_matrix_cell(), "OK");
+        assert_eq!(report.render_matrix_cell_with_error_ids(3), "OK");
+        assert_eq!(report.error_count(), 0);
+        assert_eq!(report.warning_count(), 0);
+    }
+
+    #[test]
+    fn matrix_cell_warns_when_only_warnings() {
+        let report = Report {
+            findings: vec![
+                finding("T88-X-001", Severity::Warning),
+                finding("T88-X-002", Severity::Warning),
+            ],
+        };
+        assert_eq!(report.render_matrix_cell(), "WARN(2)");
+        assert_eq!(report.render_matrix_cell_with_error_ids(3), "WARN(2)");
+    }
+
+    #[test]
+    fn matrix_cell_with_error_ids_appends_unique_ids_up_to_limit() {
+        let report = Report {
+            findings: vec![
+                finding("T88-A-001", Severity::Error),
+                finding("T88-A-001", Severity::Error),
+                finding("T88-B-001", Severity::Warning),
+                finding("T88-C-001", Severity::Error),
+                finding("T88-D-001", Severity::Error),
+            ],
+        };
+        assert_eq!(report.error_count(), 4);
+        assert_eq!(
+            report.render_matrix_cell_with_error_ids(2),
+            "BAD(4):T88-A-001,T88-C-001",
+        );
+        assert_eq!(
+            report.render_matrix_cell_with_error_ids(10),
+            "BAD(4):T88-A-001,T88-C-001,T88-D-001",
+        );
+    }
+
+    #[test]
+    fn matrix_cell_with_error_ids_zero_limit_drops_suffix() {
+        let report = Report {
+            findings: vec![finding("T88-A-001", Severity::Error)],
+        };
+        assert_eq!(report.render_matrix_cell_with_error_ids(0), "BAD(1)");
     }
 }

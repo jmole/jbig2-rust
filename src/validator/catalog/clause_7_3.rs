@@ -28,7 +28,10 @@ impl Check for ReferredSegmentsExist {
     }
 
     fn cite(&self) -> SpecCite {
-        SpecCite::t88("7.3.1", "A referred-to segment number shall identify a segment in the current JBIG2 stream.")
+        SpecCite::t88(
+            "7.3.1",
+            "A referred-to segment number shall identify a segment in the current JBIG2 stream.",
+        )
     }
 
     fn run(&self, _ctx: &CheckCtx, tree: &SegmentTree) -> Vec<Finding> {
@@ -173,7 +176,14 @@ mod tests {
         out
     }
 
-    fn seg(num: u32, flags: u8, ref_count_byte: u8, referred: &[u32], page: u8, body: &[u8]) -> Vec<u8> {
+    fn seg(
+        num: u32,
+        flags: u8,
+        ref_count_byte: u8,
+        referred: &[u32],
+        page: u8,
+        body: &[u8],
+    ) -> Vec<u8> {
         let mut out = Vec::new();
         out.extend_from_slice(&num.to_be_bytes());
         out.push(flags);

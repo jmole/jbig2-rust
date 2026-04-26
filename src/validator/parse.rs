@@ -142,7 +142,11 @@ fn parse_file_header(bytes: &[u8], tree: &mut SegmentTree) -> usize {
     }
 }
 
-fn parse_segment(bytes: &[u8], offset: usize, tree: &mut SegmentTree) -> Option<(SegmentNode, usize)> {
+fn parse_segment(
+    bytes: &[u8],
+    offset: usize,
+    tree: &mut SegmentTree,
+) -> Option<(SegmentNode, usize)> {
     let start = offset;
     if bytes.len().saturating_sub(offset) < 6 {
         diagnostic(tree, offset, None, None, "truncated segment header");

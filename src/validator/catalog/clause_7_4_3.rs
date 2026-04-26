@@ -25,9 +25,7 @@ impl Check for TextRegionFlags {
         let mut out = Vec::new();
         for node in &tree.segments {
             let ParsedBody::TextRegion {
-                flags,
-                huff_flags,
-                ..
+                flags, huff_flags, ..
             } = node.parsed
             else {
                 continue;
@@ -62,7 +60,10 @@ impl Check for TextInstanceCount {
     }
 
     fn cite(&self) -> SpecCite {
-        SpecCite::t88("7.4.3", "SBNUMINSTANCES specifies the number of symbol instances in the text region.")
+        SpecCite::t88(
+            "7.4.3",
+            "SBNUMINSTANCES specifies the number of symbol instances in the text region.",
+        )
     }
 
     fn run(&self, _ctx: &CheckCtx, tree: &SegmentTree) -> Vec<Finding> {

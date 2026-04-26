@@ -167,7 +167,11 @@ fn assert_validator_invariants(report: &Report) {
     assert!(
         report.is_sorted(),
         "validator report findings are unsorted: {:?}",
-        report.findings.iter().map(|f| f.byte_offset).collect::<Vec<_>>()
+        report
+            .findings
+            .iter()
+            .map(|f| f.byte_offset)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -182,7 +186,11 @@ fn bucket_key(
             Severity::Warning => 1,
             Severity::Info => 2,
         };
-        (severity_rank, finding.byte_offset, finding.check_id.as_str())
+        (
+            severity_rank,
+            finding.byte_offset,
+            finding.check_id.as_str(),
+        )
     });
     let Some(finding) = primary else {
         return (None, Vec::new());

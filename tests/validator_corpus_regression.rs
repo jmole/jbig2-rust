@@ -36,8 +36,7 @@ struct Expected {
 }
 
 fn parse_expected(path: &Path) -> Expected {
-    let text = fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let text = fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     let mut primary = String::new();
     let mut check_ids: BTreeSet<String> = BTreeSet::new();
     for line in text.lines() {
@@ -51,10 +50,7 @@ fn parse_expected(path: &Path) -> Expected {
             let value = rest
                 .trim_start_matches(|c: char| c.is_whitespace() || c == '=')
                 .trim();
-            let inner = value
-                .trim_start_matches('[')
-                .trim_end_matches(']')
-                .trim();
+            let inner = value.trim_start_matches('[').trim_end_matches(']').trim();
             if !inner.is_empty() {
                 for item in inner.split(',') {
                     let item = item.trim();
@@ -70,9 +66,7 @@ fn parse_expected(path: &Path) -> Expected {
 }
 
 fn strip_quotes(value: &str) -> &str {
-    value
-        .trim_matches('"')
-        .trim_matches('\'')
+    value.trim_matches('"').trim_matches('\'')
 }
 
 fn collect_fixtures(root: &Path) -> Vec<PathBuf> {
@@ -86,7 +80,9 @@ fn collect_fixtures(root: &Path) -> Vec<PathBuf> {
 }
 
 fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = fs::read_dir(dir) else { return };
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
@@ -174,7 +170,9 @@ fn validator_corpus_regression() {
         if !missing.is_empty() {
             failures.push(format!(
                 "{}: missing recorded check ids {:?}; got {{{}}}",
-                rel, missing, sorted_join(&actual)
+                rel,
+                missing,
+                sorted_join(&actual)
             ));
         }
     }
@@ -185,6 +183,66 @@ fn validator_corpus_regression() {
             failures.len(),
             checked,
             failures.join("\n")
+        );
+    }
+}
+
+/// Catch typos and catalog renames in synthetic fixtures: every
+/// `primary_check_id` declared by `tools/corpus-mint` (and persisted
+/// into `tests/validator-corpus/synthetic/*/expected.toml`) must
+/// correspond to a real catalog check.
+///
+/// This is intentionally narrower than [`validator_corpus_regression`]:
+/// the regression test runs the validator and compares full id sets,
+/// which can fail for many reasons (parser drift, lens changes, etc.).
+/// This test only checks naming consistency, so a failure here points
+/// directly at a fixture or catalog renaming.
+#[test]
+fn synthetic_fixture_primary_check_ids_match_catalog() {
+    let root = corpus_root().join("synthetic");
+    let fixtures = collect_fixtures(&root);
+    assert!(
+        !fixtures.is_empty(),
+        "no synthetic fixtures found under {}; regenerate with `cargo run --bin corpus-mint --features validator-corpus`",
+        root.display()
+    );
+
+    let known: BTreeSet<String> = jbig2::validator::catalog::checks()
+        .into_iter()
+        .map(|check| check.id().as_str().to_string())
+        .collect();
+
+    let mut failures: Vec<String> = Vec::new();
+    for path in &fixtures {
+        let expected = parse_expected(path);
+        if expected.primary.is_empty()
+            || expected.primary == "clean"
+            || expected.primary == "unknown"
+        {
+            continue;
+        }
+        if !known.contains(&expected.primary) {
+            let rel = path
+                .strip_prefix(corpus_root())
+                .unwrap_or(path)
+                .display()
+                .to_string();
+            failures.push(format!(
+                "{rel}: primary_check_id {:?} is not in the validator catalog",
+                expected.primary,
+            ));
+        }
+    }
+
+    if !failures.is_empty() {
+        panic!(
+            "synthetic fixture primary_check_id consistency: {} of {} fixtures reference unknown check ids:\n{}\n\
+             If you renamed a catalog check, regenerate the fixtures with \
+             `cargo run --bin corpus-mint --features validator-corpus`. \
+             If you added a fixture, ensure tools/corpus-mint/main.rs uses an existing CheckId.",
+            failures.len(),
+            fixtures.len(),
+            failures.join("\n"),
         );
     }
 }
