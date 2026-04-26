@@ -1,0 +1,15 @@
+bug_id = 693285
+url = "https://bugs.ghostscript.com/show_bug.cgi?id=693285"
+title = "NULL pointer dereferences"
+status = "RESOLVED FIXED"
+severity = "normal"
+attachment_id = 8869
+attachment_filename = "jbig2 null segments and glyphs.pdf"
+attachment_mime = "application/pdf"
+sha256 = "83331ae7e5b8d775a97d13bfc2fb23f35b2e4a7e89b14ebc63bfc82861baae78"
+size = 73638
+clause_guess = "unknown"
+stream_status = "not-jbig2"
+embedded = false
+notes = "Several PDFs that hit NULL pointer dereferences in jbig2dec; multiple sub-paths."
+attachment_format = "pdf"

@@ -1,0 +1,16 @@
+bug_id = 709222
+url = "https://bugs.ghostscript.com/show_bug.cgi?id=709222"
+title = "jbig2dec: signed integer overflow in refinement region coordinate arithmetic (jbig2_refinement.c)"
+status = "UNCONFIRMED"
+severity = "normal"
+attachment_id = 27938
+attachment_filename = "jbig2_refinement_poc.zip"
+attachment_mime = "application/zip"
+sha256 = "4400571274bd36295be534b0854a2cf365642ab09a57b3da19e733dc745ce5dd"
+size = 2585
+clause_guess = "7.4.7"
+stream_status = "not-jbig2"
+embedded = false
+notes = "Signed integer overflow in refinement region coordinate arithmetic (jbig2_refinement.c)."
+attachment_format = "zip"
+attachment_zip_members = ["scratch/test_refinement_overflow.c", "ghostscript_CVE_candidate/jbig2dec/jbig2_refinement_c_crash.log"]

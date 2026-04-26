@@ -1,0 +1,16 @@
+bug_id = 707438
+url = "https://bugs.ghostscript.com/show_bug.cgi?id=707438"
+title = "jbig2_image_new integer overflow causing high memory using"
+status = "UNCONFIRMED"
+severity = "normal"
+attachment_id = 25163
+attachment_filename = "jbig2_high_memory_using.zip"
+attachment_mime = "application/zip"
+sha256 = "b8abe94efbb398496b5f90594b92aa865b551ba8aecf0bd63cd3cc4b06c47b25"
+size = 413831
+clause_guess = "6.2"
+stream_status = "not-jbig2"
+embedded = false
+notes = "jbig2_image_new: width*height integer overflow causing very large allocations (DoS)."
+attachment_format = "zip"
+attachment_zip_members = ["jbig2_high_memory_using/", "jbig2_high_memory_using/jbig2_backtrace.png", "jbig2_high_memory_using/jbig2_check_memory_using.png", "jbig2_high_memory_using/poc"]

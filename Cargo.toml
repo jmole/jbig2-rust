@@ -27,6 +27,8 @@ rayon = ["dep:rayon"]
 mmr = []
 cli = ["dep:clap", "dep:anyhow", "dep:image"]
 validator-cli = ["dep:anyhow", "dep:clap", "dep:serde", "dep:serde_json"]
+validator-corpus = ["dep:anyhow", "dep:clap", "dep:serde", "dep:serde_json", "dep:sha2", "sandbox-runtime"]
+c-decoders-asan = []
 conformance-tools = ["dep:ron", "dep:serde"]
 # Sandboxed external-process runner used by the conformance matrix, the
 # corpus runner, and the integration-test oracle helpers. Pulls in `libc`
@@ -43,6 +45,7 @@ anyhow = { version = "1", optional = true }
 ron = { version = "0.12.1", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
+sha2 = { version = "0.10", optional = true }
 libc = { version = "0.2", optional = true }
 
 [dev-dependencies]
@@ -76,6 +79,16 @@ required-features = ["image"]
 name = "jbig2-validate"
 path = "tools/validator/main.rs"
 required-features = ["validator-cli"]
+
+[[bin]]
+name = "corpus-mint"
+path = "tools/corpus-mint/main.rs"
+required-features = ["validator-corpus"]
+
+[[bin]]
+name = "corpus-validator"
+path = "tools/corpus-validator/main.rs"
+required-features = ["validator-corpus"]
 
 [profile.release]
 opt-level = 3

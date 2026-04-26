@@ -1,0 +1,16 @@
+bug_id = 709213
+url = "https://bugs.ghostscript.com/show_bug.cgi?id=709213"
+title = "jbig2dec: overflow check uses wrong variable in jbig2_image_resize() (jbig2_image.c:112) — DoS/heap overflow"
+status = "UNCONFIRMED"
+severity = "normal"
+attachment_id = 27935
+attachment_filename = "jbig2_image_poc.zip"
+attachment_mime = "application/zip"
+sha256 = "6c22f0fe862b23dc5a82f0bfff0c7b76a1a64908731ad54278f48016f6f101be"
+size = 5481
+clause_guess = "6.2.5"
+stream_status = "not-jbig2"
+embedded = false
+notes = "jbig2_image_resize: overflow check uses wrong variable (image stride/area arithmetic)."
+attachment_format = "zip"
+attachment_zip_members = ["scratch/poc_jbig2_resize.pdf", "scratch/poc_jbig2_resize_4096w.pdf", "scratch/gen_poc_jbig2_resize.py", "ghostscript_CVE_candidate/jbig2dec/jbig2_image_c_crash.log"]

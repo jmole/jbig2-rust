@@ -1,0 +1,15 @@
+bug_id = 699083
+url = "https://bugs.ghostscript.com/show_bug.cgi?id=699083"
+title = "Leak in symbol dictionary parsing upon error"
+status = "RESOLVED FIXED"
+severity = "normal"
+attachment_id = 14860
+attachment_filename = "6434-80b59185030368fecf38d9abe13ffb0302a60c2a.pdf"
+attachment_mime = "application/pdf"
+sha256 = "f75f297cd9080ab1b52ce7c3bc27b4096c847b26089e2a55bd1792c278e68a6a"
+size = 81
+clause_guess = "7.4.2"
+stream_status = "not-jbig2"
+embedded = false
+notes = "Leak in symbol dictionary parsing on error path (object stream snippet only - PDF fragment, not raw JBIG2)."
+attachment_format = "embedded-fragment"

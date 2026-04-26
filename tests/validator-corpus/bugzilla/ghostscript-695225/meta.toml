@@ -1,0 +1,15 @@
+bug_id = 695225
+url = "https://bugs.ghostscript.com/show_bug.cgi?id=695225"
+title = "Heap-buffer-overflow in jbig2_decode_symbol_dict"
+status = "RESOLVED FIXED"
+severity = "major"
+attachment_id = 10889
+attachment_filename = "090514_jbig2.pdf"
+attachment_mime = "application/force-download"
+sha256 = "4ca3b2ad75387a779772f9a1c7a82531b718266c41a0248b39738f408284e488"
+size = 21472
+clause_guess = "7.4.2"
+stream_status = "not-jbig2"
+embedded = false
+notes = "Heap-buffer-overflow in jbig2_decode_symbol_dict: symbol-dictionary bounds violation."
+attachment_format = "pdf"

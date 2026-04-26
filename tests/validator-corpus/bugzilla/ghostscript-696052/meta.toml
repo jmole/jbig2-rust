@@ -1,0 +1,14 @@
+bug_id = 696052
+url = "https://bugs.ghostscript.com/show_bug.cgi?id=696052"
+title = "Segfault (null pointer access) when trying to open malformed inputs"
+status = "RESOLVED FIXED"
+severity = "normal"
+attachment_id = 11757
+attachment_filename = "jbig2_decode_refinement_template0_unopt-jbig2_image_get_pixel-nullptr.jb2"
+attachment_mime = "application/octet-stream"
+sha256 = "9c48911f1f7692ad9496c7aecfc558d32f0a283a412c115163453bba4af47cbe"
+size = 68
+clause_guess = "7.4.7"
+stream_status = "harvested"
+embedded = false
+notes = "Refinement region using NULL/uninitialised reference image (jbig2_image_get_pixel via jbig2_decode_refinement_template0_unopt)."

@@ -1,0 +1,14 @@
+bug_id = 697595
+url = "https://bugs.ghostscript.com/show_bug.cgi?id=697595"
+title = "Fuzzing."
+status = "RESOLVED WORKSFORME"
+severity = "normal"
+attachment_id = 13408
+attachment_filename = "jbig2dec-oob-heap-read-jbig2_image_compose.jbig2"
+attachment_mime = "application/octet-stream"
+sha256 = "d1d7cce7d239e56b4e5307ae5b67594585640058a624e271216fc519f270d45d"
+size = 83
+clause_guess = "6.2.5.3"
+stream_status = "harvested"
+embedded = false
+notes = "Same OOB heap read in jbig2_image_compose; logged separately under the Fuzzing component."

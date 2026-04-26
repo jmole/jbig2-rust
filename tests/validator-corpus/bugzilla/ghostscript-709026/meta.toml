@@ -1,0 +1,14 @@
+bug_id = 709026
+url = "https://bugs.ghostscript.com/show_bug.cgi?id=709026"
+title = "Integer overflow in jbig2_decode_pattern_dict leads to unbounded memory allocation of jbig2dec v0.20."
+status = "UNCONFIRMED"
+severity = "normal"
+attachment_id = 27566
+attachment_filename = "poc"
+attachment_mime = "application/octet-stream"
+sha256 = "6a1f539d3fdceb8558be941cbc6acc9a802fc645acadf61502379427a564fa7d"
+size = 6553
+clause_guess = "7.4.4"
+stream_status = "harvested"
+embedded = false
+notes = "Pattern dictionary jbig2_decode_pattern_dict: HDPW * GRAYMAX overflow causes unbounded allocation."

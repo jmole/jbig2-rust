@@ -1,0 +1,14 @@
+bug_id = 709027
+url = "https://bugs.ghostscript.com/show_bug.cgi?id=709027"
+title = "Integer overflow in jbig2_get_int32 of jbig2dec v0.20."
+status = "UNCONFIRMED"
+severity = "minor"
+attachment_id = 27567
+attachment_filename = "poc"
+attachment_mime = "application/octet-stream"
+sha256 = "11a86879591f8e715cbc6b382d5957e5fbdd4dcb9413b6abc96b095dca402036"
+size = 125187
+clause_guess = "7.2.4"
+stream_status = "harvested"
+embedded = false
+notes = "jbig2_get_int32 used to read segment header fields - integer overflow when interpreting 32-bit length/page values."

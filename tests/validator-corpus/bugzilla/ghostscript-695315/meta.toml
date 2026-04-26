@@ -1,0 +1,15 @@
+bug_id = 695315
+url = "https://bugs.ghostscript.com/show_bug.cgi?id=695315"
+title = "SEGV in jbig2_decode_symbol_dict"
+status = "RESOLVED FIXED"
+severity = "normal"
+attachment_id = 10993
+attachment_filename = "malformed.pdf"
+attachment_mime = "application/x-pdf"
+sha256 = "eae36cc7b3195d9ae558dce52f366429f01c83f68ae7b00aab3568e3f2735d37"
+size = 4766
+clause_guess = "7.4.2"
+stream_status = "not-jbig2"
+embedded = false
+notes = "SEGV in jbig2_decode_symbol_dict on malformed symbol-dictionary segment."
+attachment_format = "pdf"

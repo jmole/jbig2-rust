@@ -1,0 +1,14 @@
+bug_id = 708722
+url = "https://bugs.ghostscript.com/show_bug.cgi?id=708722"
+title = "Vulnerability Report: Uncontrolled Memory Allocation in jbig2_hd_new"
+status = "UNCONFIRMED"
+severity = "normal"
+attachment_id = 27081
+attachment_filename = "oom_min"
+attachment_mime = "application/octet-stream"
+sha256 = "212b548c458d7696be97a8a437b5647b3287c46d00154d3154b47d0fedd4778a"
+size = 46
+clause_guess = "7.4.4"
+stream_status = "harvested"
+embedded = false
+notes = "Pattern/halftone dictionary jbig2_hd_new: HDPATS allocation is unchecked, leading to uncontrolled memory allocation."

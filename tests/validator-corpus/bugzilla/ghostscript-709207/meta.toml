@@ -1,0 +1,16 @@
+bug_id = 709207
+url = "https://bugs.ghostscript.com/show_bug.cgi?id=709207"
+title = "jbig2dec: heap-buffer-overflow read + signed integer overflow in jbig2_mmr.c"
+status = "UNCONFIRMED"
+severity = "major"
+attachment_id = 27929
+attachment_filename = "jbig2_mmr_poc.zip"
+attachment_mime = "application/zip"
+sha256 = "cd2d94a7944dbf7b149835f38952452decc5653b8b29bd6d29c36d943eca1bf0"
+size = 5525
+clause_guess = "Annex G"
+stream_status = "not-jbig2"
+embedded = false
+notes = "Heap-buffer-overflow read + signed integer overflow in jbig2_mmr.c (G4 MMR decoder)."
+attachment_format = "zip"
+attachment_zip_members = ["scratch/poc_oob_read.c", "scratch/poc_int_overflow.c", "ghostscript_CVE_candidate/jbig2dec/jbig2_mmr_c_crash.log", "ghostscript_CVE_candidate/jbig2dec/jbig2_mmr_c_ubsan.log"]

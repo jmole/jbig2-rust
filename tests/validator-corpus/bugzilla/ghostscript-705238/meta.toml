@@ -1,0 +1,15 @@
+bug_id = 705238
+url = "https://bugs.ghostscript.com/show_bug.cgi?id=705238"
+title = "jbig2dec complete system hang when used in mupdf"
+status = "UNCONFIRMED"
+severity = "normal"
+attachment_id = 22424
+attachment_filename = "MuPDF_system_hang"
+attachment_mime = "application/pdf"
+sha256 = "939a2b19c5eacac84aaae4dc65dd957cb9e49bb7fe63a3f534dd217ad7dbd601"
+size = 28095
+clause_guess = "Annex E"
+stream_status = "not-jbig2"
+embedded = false
+notes = "Decoder hangs on a particular MuPDF-rendered JBIG2 page (suspected arith-coder / MMR infinite loop)."
+attachment_format = "pdf"
