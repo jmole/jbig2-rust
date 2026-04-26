@@ -97,8 +97,9 @@ pub fn run(root: &Path) -> Result<()> {
                 fs::create_dir_all(&dir)?;
                 fs::write(dir.join("stream.jb2"), &case.bytes)?;
                 let meta = format!(
-                    "seed_name = {:?}\nseed_sha256 = {:?}\nschedule = {:?}\nrng_seed = {:#018x}\ncase_id = {}\nmutation = {:?}\n",
+                    "seed_name = {:?}\nseed_path = {:?}\nseed_sha256 = {:?}\nschedule = {:?}\nrng_seed = {:#018x}\ncase_id = {}\nmutation = {:?}\n",
                     seed_name,
+                    seed_path,
                     seed_sha,
                     schedule.as_str(),
                     RNG_SEED,
@@ -113,9 +114,7 @@ pub fn run(root: &Path) -> Result<()> {
                     .collect::<Vec<_>>();
                 Expected::validator(primary_id.clone(), check_ids)
                     .write(&dir.join("expected.toml"))
-                    .with_context(|| {
-                        format!("write expected metadata for {}", dir.display())
-                    })?;
+                    .with_context(|| format!("write expected metadata for {}", dir.display()))?;
             }
 
             index.push_str(&format!(

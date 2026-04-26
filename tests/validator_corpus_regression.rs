@@ -5,8 +5,8 @@
 //!
 //! * `validator-fixture` / `both` — the recorded `primary_check_id` must
 //!   appear in the validator's findings (or, if it is `clean`, the validator
-//!   must produce zero findings). Every id in the recorded `check_ids` set
-//!   must also be present.
+//!   must produce zero findings). `check_ids` is retained as historical
+//!   evidence and is not hard-asserted.
 //! * `decoder-fixture` — the validator must terminate without panicking. We
 //!   do not enforce a particular finding set (the contract is on
 //!   `[decoder.<impl>]` blocks, which `corpus-validator --strict` consumes).
@@ -27,6 +27,7 @@ use std::path::{Path, PathBuf};
 
 use jbig2::validator::corpus::{Expected, Shape};
 use jbig2::validator::{validate, Lens};
+use sha2::{Digest, Sha256};
 
 fn corpus_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -72,6 +73,10 @@ fn validator_corpus_regression() {
     let mut checked = 0usize;
 
     for expected_path in &fixtures {
+        if let Some(message) = seed_anchor_drift_message(&root, expected_path) {
+            failures.push(message);
+        }
+
         let stream_path = expected_path.with_file_name("stream.jb2");
         if !stream_path.exists() {
             continue;
@@ -146,20 +151,6 @@ fn validator_corpus_regression() {
                 sorted_join(&actual)
             ));
             continue;
-        }
-
-        let missing: Vec<&String> = validator
-            .check_ids
-            .iter()
-            .filter(|id| !actual.contains(*id))
-            .collect();
-        if !missing.is_empty() {
-            failures.push(format!(
-                "{}: missing recorded check ids {:?}; got {{{}}}",
-                rel,
-                missing,
-                sorted_join(&actual)
-            ));
         }
     }
 
@@ -259,7 +250,10 @@ fn bugzilla_harvested_fixtures_have_streams() {
     }
     let mut failures: Vec<String> = Vec::new();
     let mut checked = 0usize;
-    for entry in fs::read_dir(&harvested).expect("read harvested dir").flatten() {
+    for entry in fs::read_dir(&harvested)
+        .expect("read harvested dir")
+        .flatten()
+    {
         let dir = entry.path();
         if !dir.is_dir() {
             continue;
@@ -274,7 +268,11 @@ fn bugzilla_harvested_fixtures_have_streams() {
             failures.push(format!("{}: missing expected.toml", dir.display()));
         }
     }
-    assert!(checked > 0, "no harvested bugzilla fixtures under {}", harvested.display());
+    assert!(
+        checked > 0,
+        "no harvested bugzilla fixtures under {}",
+        harvested.display()
+    );
     if !failures.is_empty() {
         panic!(
             "bugzilla/harvested coverage gap ({} fixture(s)):\n{}\n\
@@ -287,6 +285,123 @@ fn bugzilla_harvested_fixtures_have_streams() {
 
 fn sorted_join(set: &BTreeSet<String>) -> String {
     set.iter().cloned().collect::<Vec<_>>().join(", ")
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SeedAnchor {
+    seed_path: String,
+    seed_sha256: String,
+}
+
+fn seed_anchor_drift_message(root: &Path, expected_path: &Path) -> Option<String> {
+    let rel = expected_path
+        .strip_prefix(root)
+        .unwrap_or(expected_path)
+        .display()
+        .to_string();
+    let meta_path = expected_path.with_file_name("meta.toml");
+    if !meta_path.exists() {
+        return None;
+    }
+    let meta_text = match fs::read_to_string(&meta_path) {
+        Ok(text) => text,
+        Err(err) => {
+            return Some(format!(
+                "{}: failed to read {}: {err}",
+                rel,
+                meta_path.display()
+            ));
+        }
+    };
+    let anchor = match parse_seed_anchor(&meta_text) {
+        Ok(anchor) => anchor,
+        Err(err) => return Some(format!("{rel}: {err}")),
+    };
+    let Some(anchor) = anchor else {
+        return None;
+    };
+
+    let seed_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(&anchor.seed_path);
+    let current_bytes = match fs::read(&seed_path) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            return Some(format!(
+                "{}: seed file {} cannot be read: {err}",
+                rel,
+                seed_path.display()
+            ));
+        }
+    };
+    let mut sha = Sha256::new();
+    sha.update(&current_bytes);
+    let current_sha = format!("{:x}", sha.finalize());
+    if current_sha == anchor.seed_sha256 {
+        return None;
+    }
+
+    Some(format!(
+        "{}: {} has changed since this fixture was minted (was {}..., now {}...). Either revert the vendor bump or regenerate with `cargo run --bin corpus-mint --features validator-corpus`.",
+        rel,
+        anchor.seed_path,
+        short_hash(&anchor.seed_sha256),
+        short_hash(&current_sha),
+    ))
+}
+
+fn parse_seed_anchor(meta_text: &str) -> Result<Option<SeedAnchor>, String> {
+    let value: toml::Value =
+        toml::from_str(meta_text).map_err(|err| format!("invalid meta.toml: {err}"))?;
+    let Some(table) = value.as_table() else {
+        return Err("meta.toml is not a table".to_string());
+    };
+
+    if let (Some(base_path), Some(base_sha256)) = (
+        table.get("base_path").and_then(|v| v.as_str()),
+        table.get("base_sha256").and_then(|v| v.as_str()),
+    ) {
+        return Ok(Some(SeedAnchor {
+            seed_path: base_path.to_string(),
+            seed_sha256: base_sha256.to_string(),
+        }));
+    }
+
+    if let (Some(seed_path), Some(seed_sha256)) = (
+        table.get("seed_path").and_then(|v| v.as_str()),
+        table.get("seed_sha256").and_then(|v| v.as_str()),
+    ) {
+        return Ok(Some(SeedAnchor {
+            seed_path: seed_path.to_string(),
+            seed_sha256: seed_sha256.to_string(),
+        }));
+    }
+
+    if let Some(seed_sha256) = table.get("seed_sha256").and_then(|v| v.as_str()) {
+        let seed_path = match table.get("seed_name").and_then(|v| v.as_str()) {
+            Some("annex-h") => "vendor/jbig2dec/annex-h.jbig2",
+            Some(other) => {
+                return Err(format!(
+                    "meta.toml has seed_sha256 but unknown seed_name {:?}; add a seed_path mapping for drift checks",
+                    other
+                ));
+            }
+            None => {
+                return Err(
+                    "meta.toml has seed_sha256 but no seed_name/seed_path to locate the seed"
+                        .to_string(),
+                );
+            }
+        };
+        return Ok(Some(SeedAnchor {
+            seed_path: seed_path.to_string(),
+            seed_sha256: seed_sha256.to_string(),
+        }));
+    }
+
+    Ok(None)
+}
+
+fn short_hash(hash: &str) -> &str {
+    hash.get(..8).unwrap_or(hash)
 }
 
 /// Sanity check: the canonical Annex H stream itself must validate clean.
@@ -366,4 +481,48 @@ fn itu_t88_conformance_corpus_validates_clean() {
             failures.join("\n")
         );
     }
+}
+
+#[test]
+fn parse_seed_anchor_supports_bitflip_meta_shape() {
+    let meta = r#"
+base_path = "vendor/jbig2dec/annex-h.jbig2"
+base_sha256 = "abc123"
+byte_offset = 10
+"#;
+    let anchor = parse_seed_anchor(meta).expect("parse").expect("anchor");
+    assert_eq!(
+        anchor,
+        SeedAnchor {
+            seed_path: "vendor/jbig2dec/annex-h.jbig2".to_string(),
+            seed_sha256: "abc123".to_string(),
+        }
+    );
+}
+
+#[test]
+fn parse_seed_anchor_supports_mutator_meta_shape() {
+    let meta = r#"
+seed_name = "annex-h"
+seed_sha256 = "def456"
+schedule = "bit-flip"
+"#;
+    let anchor = parse_seed_anchor(meta).expect("parse").expect("anchor");
+    assert_eq!(
+        anchor,
+        SeedAnchor {
+            seed_path: "vendor/jbig2dec/annex-h.jbig2".to_string(),
+            seed_sha256: "def456".to_string(),
+        }
+    );
+}
+
+#[test]
+fn parse_seed_anchor_ignores_non_seed_meta() {
+    let meta = r#"
+description = "synthetic fixture"
+primary_check_id = "T88-7.4.4-001"
+"#;
+    let anchor = parse_seed_anchor(meta).expect("parse");
+    assert!(anchor.is_none());
 }

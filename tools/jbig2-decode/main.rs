@@ -52,10 +52,7 @@ fn main() -> ExitCode {
     let bytes = match std::fs::read(path) {
         Ok(b) => b,
         Err(err) => {
-            let _ = writeln!(
-                std::io::stderr(),
-                "jbig2-decode: read {path}: {err}"
-            );
+            let _ = writeln!(std::io::stderr(), "jbig2-decode: read {path}: {err}");
             return ExitCode::from(EXIT_BAD_ARGS);
         }
     };
@@ -108,11 +105,7 @@ fn install_abort_panic_hook() {
             .payload()
             .downcast_ref::<&str>()
             .copied()
-            .or_else(|| {
-                info.payload()
-                    .downcast_ref::<String>()
-                    .map(String::as_str)
-            })
+            .or_else(|| info.payload().downcast_ref::<String>().map(String::as_str))
             .unwrap_or("<no payload>");
         let _ = writeln!(
             std::io::stderr(),

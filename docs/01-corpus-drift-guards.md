@@ -1,4 +1,4 @@
-# Corpus drift guards
+# 01 — Corpus drift guards
 
 This document motivates two changes to how the synthetic and
 mutator-generated corpora are validated: a `seed_sha256` cross-check
@@ -10,6 +10,42 @@ canonical reference for any future plan that picks up either change.
 The reader is a maintainer who has not yet hit either failure mode but
 is going to. Both are latent in the harness today; the doc's job is to
 explain why they matter enough to fix before they do.
+
+## Sequence
+
+This is **step 1 of 5** in the corpus harness rollout. Land the docs
+in this order:
+
+1. **`01-corpus-drift-guards.md` — you are here.**
+2. [`02-sandbox-preflights.md`](02-sandbox-preflights.md)
+3. [`03-corpus-ci-goals.md`](03-corpus-ci-goals.md)
+4. [`04-fuzz-strategy.md`](04-fuzz-strategy.md)
+5. [`05-external-decoder-taxonomy.md`](05-external-decoder-taxonomy.md)
+
+**Prerequisites.** None. The seed-SHA cross-check applies to existing
+fixtures and the `check_ids` softening only relaxes an existing
+assertion; no schema work, new binaries, or external-decoder rows are
+required.
+
+**Why first.** This is the smallest, lowest-risk change with an
+immediate correctness win. Landing it before later steps means every
+subsequent corpus regeneration (and there will be several as the
+harness grows) is protected by the seed cross-check from day one.
+
+**Strict ordering rule.** Step 1 can land on its own. Step 2
+(vendor-SHA preflight) is the same *kind* of guarantee but for
+external decoder binaries rather than corpus seed inputs; the two
+checks are deliberately separated because step 1 protects fixtures
+already on disk while step 2 protects baselines that have not yet been
+recorded. **However: any PR that commits external-decoder verdicts
+into `expected.toml` must also enforce step 2.** Recording a
+`decoder.jbig2dec.verdict = "RejectErr"` against an unpinned vendor is
+exactly the silent-bad-baseline failure mode step 2 exists to prevent.
+
+**Unblocks.** Safe corpus regeneration during all later steps. Without
+the seed cross-check, every later doc's "regenerate the corpus and
+re-baseline" instruction risks silently re-anchoring fixtures against
+a moved seed.
 
 ## The corpus is part of the contract
 
@@ -167,6 +203,28 @@ The fix surface is also symmetric: both changes live in
 work, and the doc that motivates either is the doc that motivates
 both.
 
+## Relationship to the vendor-SHA preflight (step 2)
+
+A reasonable next question is "isn't the seed-SHA cross-check the same
+thing as [`02-sandbox-preflights.md`](02-sandbox-preflights.md)'s
+vendor-SHA preflight, just under a different name?" They are cousins,
+not twins. Both encode the invariant *a vendored input the corpus
+depends on must not move out from under a recorded baseline without
+the harness saying so*, but they operate on different artefacts:
+
+| Aspect            | Step 1 (this doc)                              | Step 2 (preflights)                                          |
+| ----------------- | ---------------------------------------------- | ------------------------------------------------------------ |
+| What is hashed    | A file's content (`vendor/jbig2dec/annex-h.jbig2`) | A submodule SHA (`git -C vendor/jbig2dec rev-parse HEAD`)    |
+| Protects          | Synthetic / mutator / bitflip fixtures on disk | External-decoder verdicts in `expected.toml`                 |
+| Lives in          | `tests/validator_corpus_regression.rs`         | `tools/corpus-validator/main.rs` (preflight phase)           |
+| Required to land  | Now (step 1)                                   | Before any external-decoder verdict is committed (step 2)    |
+
+The two can land in separate PRs. They should share the underlying
+"vendor anchor" helper — a single module that hashes a path or reads a
+submodule SHA, compares against a recorded value, and produces a
+unified remediation message — so step 2's preflight reuses step 1's
+infrastructure rather than parallel-implementing it.
+
 ## Open questions
 
 Things the next plan should pick up; this doc does not pre-decide.
@@ -211,4 +269,6 @@ Things the next plan should pick up; this doc does not pre-decide.
 - The schema where `check_ids` lives:
   [`src/validator/corpus.rs`](../src/validator/corpus.rs)
 - The CI cadence the changes will run inside:
-  [`docs/corpus-ci-goals.md`](corpus-ci-goals.md)
+  [`docs/03-corpus-ci-goals.md`](03-corpus-ci-goals.md)
+- The preflight that is the closest cousin to this doc:
+  [`docs/02-sandbox-preflights.md`](02-sandbox-preflights.md)

@@ -27,6 +27,12 @@
 //!     validator-only.
 //!   * Every external invocation goes through `jbig2::util::sandbox` so we
 //!     never escape into the host environment.
+//!   * Before fixture sweep, a vendor-SHA preflight verifies configured
+//!     vendor binaries still match `tools/conformance/known-issues.ron`.
+//!     Override only for local debugging with
+//!     `JBIG2_CORPUS_NO_VENDOR_CHECK=1`. For the sanitizer-canary deferral
+//!     rationale and sequencing rule, see
+//!     `docs/02-sandbox-preflights.md` ("Implementation status").
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -37,6 +43,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use clap::Parser;
 use jbig2::util::sandbox::{KillReason, Sandbox, SandboxOutcome};
+use jbig2::util::vendor_anchor::{load_anchors, short_sha, AnchorStatus, VendorAnchor};
 use jbig2::validator::corpus::{Expected, Shape, Verdict};
 use jbig2::validator::{validate, Lens, Report};
 use sha2::{Digest, Sha256};
@@ -46,6 +53,8 @@ const REPORT_RELATIVE: &str = "target/corpus-report.md";
 const PER_TOOL_BUDGET_SECS: u64 = 600;
 const PER_TOOL_INVALID_CAP: usize = 256;
 const RUST_DECODER_BINARY: &str = "target/release/jbig2-decode";
+const PRECHECK_NO_VENDOR_ENV: &str = "JBIG2_CORPUS_NO_VENDOR_CHECK";
+const PRECHECK_EXIT_CODE: i32 = 4;
 
 #[derive(Parser, Debug)]
 #[command(name = "corpus-validator")]
@@ -141,6 +150,17 @@ fn main() -> Result<()> {
             .collect::<Vec<_>>()
             .join(", ")
     );
+    match run_preflight(&root, &decoders) {
+        Ok(lines) => {
+            for line in lines {
+                eprintln!("{line}");
+            }
+        }
+        Err(err) => {
+            eprintln!("{err}");
+            std::process::exit(PRECHECK_EXIT_CODE);
+        }
+    }
 
     let sandbox = Sandbox::for_decoder()
         .ro_path(corpus_root.clone())
@@ -294,6 +314,153 @@ struct DecoderConfig {
     run_against_validator_invalid: bool,
 }
 
+#[derive(Debug)]
+enum PreflightError {
+    LoadAnchors(String),
+    MissingAnchor {
+        decoder: String,
+        binary_rel: String,
+    },
+    CheckFailed {
+        decoder: String,
+        anchor_path: String,
+        error: String,
+    },
+    Mismatch {
+        decoder: String,
+        anchor_path: String,
+        expected: String,
+        actual: String,
+    },
+}
+
+impl std::fmt::Display for PreflightError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::LoadAnchors(err) => write!(
+                f,
+                "corpus-validator: preflight FAILED: could not read vendor anchors from tools/conformance/known-issues.ron: {err}"
+            ),
+            Self::MissingAnchor {
+                decoder,
+                binary_rel,
+            } => write!(
+                f,
+                "corpus-validator: preflight FAILED for {decoder}\n  {binary_rel} is under vendor/ but no GitSha pin was found in tools/conformance/known-issues.ron\n  Add vendor: GitSha {{ path: \"vendor/<submodule>\", sha: \"<commit>\" }} to known-issues.ron\n  Override (local debugging only): {PRECHECK_NO_VENDOR_ENV}=1"
+            ),
+            Self::CheckFailed {
+                decoder,
+                anchor_path,
+                error,
+            } => write!(
+                f,
+                "corpus-validator: preflight FAILED for {decoder}\n  failed to read current vendor anchor for {anchor_path}: {error}\n  Override (local debugging only): {PRECHECK_NO_VENDOR_ENV}=1"
+            ),
+            Self::Mismatch {
+                decoder,
+                anchor_path,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "corpus-validator: preflight FAILED for {decoder}\n  {anchor_path} is at {}, known-issues.ron pins {}\n  Either: git -C {anchor_path} checkout {expected}\n  Or: update the pin in tools/conformance/known-issues.ron and regenerate baselines.\n  Override (local debugging only): {PRECHECK_NO_VENDOR_ENV}=1",
+                short_sha(actual),
+                short_sha(expected),
+            ),
+        }
+    }
+}
+
+fn run_preflight(root: &Path, decoders: &[DecoderConfig]) -> Result<Vec<String>, PreflightError> {
+    let anchors = load_anchors(root).map_err(PreflightError::LoadAnchors)?;
+    let mut lines = Vec::new();
+    let allow_override = std::env::var(PRECHECK_NO_VENDOR_ENV).ok().as_deref() == Some("1");
+
+    for decoder in decoders {
+        let binary_abs = if decoder.binary.is_absolute() {
+            decoder.binary.clone()
+        } else {
+            root.join(&decoder.binary)
+        };
+        let Ok(binary_rel_path) = binary_abs.strip_prefix(root) else {
+            lines.push(format!(
+                "corpus-validator: preflight: {} skipped (binary not under vendor/<submodule>)",
+                decoder.name
+            ));
+            continue;
+        };
+        let binary_rel = binary_rel_path.to_string_lossy().replace('\\', "/");
+        if !binary_rel.starts_with("vendor/") {
+            lines.push(format!(
+                "corpus-validator: preflight: {} skipped (binary not under vendor/<submodule>)",
+                decoder.name
+            ));
+            continue;
+        }
+
+        let anchor = match VendorAnchor::lookup_for_binary(&anchors, &binary_abs, root) {
+            Some(anchor) => anchor,
+            None => {
+                let err = PreflightError::MissingAnchor {
+                    decoder: decoder.name.to_string(),
+                    binary_rel: binary_rel.clone(),
+                };
+                if allow_override {
+                    lines.push(format!(
+                        "corpus-validator: preflight: {} WARNING ({})",
+                        decoder.name, err
+                    ));
+                    continue;
+                }
+                return Err(err);
+            }
+        };
+
+        let anchor_path = anchor.path.to_string_lossy().replace('\\', "/");
+        match anchor.check(root) {
+            Ok(AnchorStatus::Ok { actual }) => lines.push(format!(
+                "corpus-validator: preflight: {} OK ({} @ {})",
+                decoder.name,
+                anchor_path,
+                short_sha(&actual)
+            )),
+            Ok(AnchorStatus::Mismatch { expected, actual }) => {
+                let err = PreflightError::Mismatch {
+                    decoder: decoder.name.to_string(),
+                    anchor_path,
+                    expected,
+                    actual,
+                };
+                if allow_override {
+                    lines.push(format!(
+                        "corpus-validator: preflight: {} WARNING ({})",
+                        decoder.name, err
+                    ));
+                    continue;
+                }
+                return Err(err);
+            }
+            Err(error) => {
+                let err = PreflightError::CheckFailed {
+                    decoder: decoder.name.to_string(),
+                    anchor_path,
+                    error,
+                };
+                if allow_override {
+                    lines.push(format!(
+                        "corpus-validator: preflight: {} WARNING ({})",
+                        decoder.name, err
+                    ));
+                    continue;
+                }
+                return Err(err);
+            }
+        }
+    }
+
+    Ok(lines)
+}
+
 fn resolve_decoders(root: &Path, args: &Args) -> Vec<DecoderConfig> {
     let mut out = Vec::new();
     if !args.without_rust {
@@ -330,13 +497,11 @@ fn resolve_decoders(root: &Path, args: &Args) -> Vec<DecoderConfig> {
                 run_against_validator_invalid: true,
             });
         }
-        if let Some(path) =
-            args.itu_jbig2.clone().or_else(|| {
-                candidate_path(&root.join(
-                    "vendor/T-REC-T.88-201808/Software/JBIG2_SampleSoftware-A20180829/source/jbig2",
-                ))
-            })
-        {
+        if let Some(path) = args.itu_jbig2.clone().or_else(|| {
+            candidate_path(&root.join(
+                "vendor/T-REC-T.88-201808/Software/JBIG2_SampleSoftware-A20180829/source/jbig2",
+            ))
+        }) {
             out.push(DecoderConfig {
                 name: "itu_t88",
                 binary: path,
@@ -619,12 +784,7 @@ impl CorpusReport {
         }
     }
 
-    fn record_fixture(
-        &mut self,
-        fixture: &Fixture,
-        report: &Report,
-        expected: Option<Expected>,
-    ) {
+    fn record_fixture(&mut self, fixture: &Fixture, report: &Report, expected: Option<Expected>) {
         let entry = FixtureReport {
             relative: fixture.relative.clone(),
             invalid: report.is_invalid(),
@@ -760,8 +920,11 @@ impl CorpusReport {
         // Per-fixture per-impl matrix, restricted to fixtures whose shape
         // requires decoder-row coverage. Cells render as
         // `verdict[expected:<vY>]` so a single mismatching cell pops out.
-        let decoder_rows: Vec<&FixtureReport> =
-            self.fixtures.iter().filter(|f| f.runs_decoder_row()).collect();
+        let decoder_rows: Vec<&FixtureReport> = self
+            .fixtures
+            .iter()
+            .filter(|f| f.runs_decoder_row())
+            .collect();
         if !decoder_rows.is_empty() {
             let impls = self.observed_decoder_names();
             out.push_str("\n## Per-fixture decoder matrix\n\n");
@@ -822,8 +985,7 @@ impl CorpusReport {
     }
 
     fn observed_decoder_names(&self) -> Vec<String> {
-        let mut set: std::collections::BTreeSet<String> =
-            self.decoders.keys().cloned().collect();
+        let mut set: std::collections::BTreeSet<String> = self.decoders.keys().cloned().collect();
         for f in &self.fixtures {
             for k in f.decoder_runs.keys() {
                 set.insert(k.clone());
@@ -960,4 +1122,158 @@ fn fixture_sha256(path: &Path) -> Result<String> {
     let mut sha = Sha256::new();
     sha.update(&bytes);
     Ok(format!("{:x}", sha.finalize()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Mutex, OnceLock};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn unique_temp_dir(prefix: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock drift")
+            .as_nanos();
+        let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("tmp-tests");
+        fs::create_dir_all(&base).expect("create tmp-tests dir");
+        let dir = base.join(format!("jbig2-{prefix}-{}-{nanos}", std::process::id()));
+        fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+
+    fn run_git(dir: &Path, args: &[&str]) {
+        let template_dir = dir.join(".git-template");
+        fs::create_dir_all(&template_dir).expect("create git template dir");
+        let status = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_AUTHOR_NAME", "test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .env("GIT_TEMPLATE_DIR", &template_dir)
+            .status()
+            .expect("spawn git");
+        assert!(
+            status.success(),
+            "git {:?} failed in {}",
+            args,
+            dir.display()
+        );
+    }
+
+    fn head_sha(dir: &Path) -> String {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .arg("rev-parse")
+            .arg("HEAD")
+            .output()
+            .expect("git rev-parse");
+        assert!(output.status.success());
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    fn seed_known_issues(root: &Path, sha: &str) {
+        let known_issues = root.join("tools/conformance/known-issues.ron");
+        fs::create_dir_all(known_issues.parent().expect("parent")).expect("mkdir");
+        fs::write(
+            known_issues,
+            format!(
+                r#"
+[
+    (vendor: Some(GitSha(path: "vendor/jbig2dec", sha: "{sha}"))),
+]
+"#
+            ),
+        )
+        .expect("write known issues");
+    }
+
+    fn make_vendor_repo(root: &Path) -> PathBuf {
+        let repo = root.join("vendor/jbig2dec");
+        fs::create_dir_all(&repo).expect("create repo");
+        run_git(&repo, &["init", "."]);
+        fs::write(repo.join("README"), "seed\n").expect("write file");
+        run_git(&repo, &["add", "README"]);
+        run_git(&repo, &["commit", "-m", "init"]);
+        fs::write(repo.join("jbig2dec"), "#!/bin/sh\nexit 0\n").expect("write fake binary");
+        repo
+    }
+
+    fn decoder_for(path: PathBuf) -> DecoderConfig {
+        DecoderConfig {
+            name: "jbig2dec",
+            binary: path,
+            args_template: jbig2dec_args,
+            always_run_decoder_fixtures: false,
+            run_against_validator_invalid: true,
+        }
+    }
+
+    #[test]
+    fn preflight_ok_for_matching_vendor_sha() {
+        let _guard = env_lock().lock().expect("env lock");
+        std::env::remove_var(PRECHECK_NO_VENDOR_ENV);
+        let root = unique_temp_dir("preflight-ok");
+        let repo = make_vendor_repo(&root);
+        let sha = head_sha(&repo);
+        seed_known_issues(&root, &sha);
+        let decoder = decoder_for(root.join("vendor/jbig2dec/jbig2dec"));
+
+        let lines = run_preflight(&root, &[decoder]).expect("preflight ok");
+        assert!(
+            lines.iter().any(|l| l.contains("preflight: jbig2dec OK")),
+            "{lines:#?}"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn preflight_mismatch_returns_error() {
+        let _guard = env_lock().lock().expect("env lock");
+        std::env::remove_var(PRECHECK_NO_VENDOR_ENV);
+        let root = unique_temp_dir("preflight-mismatch");
+        let repo = make_vendor_repo(&root);
+        seed_known_issues(&root, "deadbeef");
+        let decoder = decoder_for(root.join("vendor/jbig2dec/jbig2dec"));
+
+        let err = run_preflight(&root, &[decoder]).expect_err("expected mismatch");
+        assert!(matches!(err, PreflightError::Mismatch { .. }), "{err:?}");
+
+        // Keep the repo variable used so clippy does not complain.
+        assert!(repo.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn preflight_mismatch_allows_override() {
+        let _guard = env_lock().lock().expect("env lock");
+        std::env::remove_var(PRECHECK_NO_VENDOR_ENV);
+        let root = unique_temp_dir("preflight-override");
+        let _repo = make_vendor_repo(&root);
+        seed_known_issues(&root, "deadbeef");
+        let decoder = decoder_for(root.join("vendor/jbig2dec/jbig2dec"));
+
+        std::env::set_var(PRECHECK_NO_VENDOR_ENV, "1");
+        let lines = run_preflight(&root, &[decoder]).expect("override should pass");
+        std::env::remove_var(PRECHECK_NO_VENDOR_ENV);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("preflight: jbig2dec WARNING")),
+            "{lines:#?}"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
 }

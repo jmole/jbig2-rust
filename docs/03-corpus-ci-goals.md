@@ -1,4 +1,4 @@
-# Corpus CI Goals
+# 03 — Corpus CI Goals
 
 This document describes the CI policy we want to grow into once the
 deterministic corpus harness ships. It deliberately changes no CI
@@ -11,6 +11,43 @@ The reader is a maintainer about to wire the corpus into a CI provider
 and trying to decide how strict each layer should be, what signal each
 layer is meant to produce, and what to do when a layer exceeds its
 walltime budget.
+
+## Sequence
+
+This is **step 3 of 5** in the corpus harness rollout.
+
+1. [`01-corpus-drift-guards.md`](01-corpus-drift-guards.md)
+2. [`02-sandbox-preflights.md`](02-sandbox-preflights.md)
+3. **`03-corpus-ci-goals.md` — you are here.**
+4. [`04-fuzz-strategy.md`](04-fuzz-strategy.md)
+5. [`05-external-decoder-taxonomy.md`](05-external-decoder-taxonomy.md)
+
+**Prerequisites.** Steps 1 and 2. Tier 0 (fast strict regression on
+every PR) is safe to enable as soon as drift guards (step 1) are in
+place. Tier 1 (full corpus including external-decoder rows) must not
+enable `--with-c-decoders` until vendor-SHA preflight (step 2) is
+landed; without it, baselined external-decoder verdicts can drift
+silently under the next vendor bump and the regression net loses
+teeth.
+
+**Implementation cadence.** This doc is policy, not a single PR.
+Implement in two phases:
+
+- *Phase 3a — tier-0 wiring.* After step 1 lands. CI runs
+  `corpus-validator --strict` on the rust row only, against a small
+  hand-picked subset, on every PR.
+- *Phase 3b — tier-1 expansion.* After step 2 lands. CI runs the full
+  corpus including external decoders, nightly, with vendor-SHA
+  preflight enforcing.
+
+Tier 2 (fuzzing) cannot be enabled before [step
+4](04-fuzz-strategy.md) is implemented — its policy is captured in
+this doc only so that the cadence/budget framework is unified across
+all three tiers.
+
+**Unblocks.** A predictable CI surface that subsequent steps slot
+into. Step 4's nightly fuzz cadence and step 5's matrix Bugzilla
+column both reference the layering defined here.
 
 ## Why this needs a doc
 
@@ -27,8 +64,8 @@ The corpus has more than one purpose. It is, simultaneously:
 These purposes have different cost profiles. Regression coverage on a
 small handful of hostile inputs has to run on every PR or it is not
 regression coverage. The full corpus matrix can run nightly. The fuzz
-layer (described in [`docs/fuzz-strategy.md`](fuzz-strategy.md)) wants
-hours of walltime, not minutes. Conflating them produces either a slow
+layer (described in [`docs/04-fuzz-strategy.md`](04-fuzz-strategy.md))
+wants hours of walltime, not minutes. Conflating them produces either a slow
 PR loop or a leaky regression net, depending on which way the
 compromise leans, and we have observed both failure modes in adjacent
 projects.
@@ -79,7 +116,7 @@ Nightly cadence keeps the signal high without inducing that habit.
 ### Tier 2 — fuzzing
 
 The fuzz layer described in
-[`docs/fuzz-strategy.md`](fuzz-strategy.md). It runs on a separate
+[`docs/04-fuzz-strategy.md`](04-fuzz-strategy.md). It runs on a separate
 schedule (overnight, weekend, or whenever the CI provider has
 spare cycles) and produces minimized reproducers, not pass/fail
 signal. Tier 2 never blocks a PR. Its outputs feed manual triage,
@@ -114,7 +151,7 @@ target. The order of operations is:
    dropping coverage is the worst possible outcome.
 3. **Minimize the corpus.** Some fixtures are larger than they need
    to be (especially mutator-generated streams). The
-   [`docs/corpus-drift-guards.md`](corpus-drift-guards.md) doc
+   [`docs/01-corpus-drift-guards.md`](01-corpus-drift-guards.md) doc
    describes the seed-anchoring policy that makes regeneration safe;
    if minimization is the right answer, do it under that policy.
 4. **Raise the budget with maintainer signoff.** Sometimes the right
@@ -136,10 +173,10 @@ leaves them unresolved.
   service.
 - **Sanitizer build cadence.** A sanitizer-instrumented `jbig2dec`
   produces qualitatively different signal than a release build. The
-  [`docs/sandbox-preflights.md`](sandbox-preflights.md) doc argues
-  that sanitizer builds should be required at some cadence, but
-  whether that cadence is "every tier-1 run" or "every tier-2 run"
-  is open.
+  [`docs/02-sandbox-preflights.md`](02-sandbox-preflights.md) doc
+  argues that sanitizer builds should be required at some cadence,
+  but whether that cadence is "every tier-1 run" or "every tier-2
+  run" is open.
 - **Cross-platform.** The corpus harness has been exercised on
   Linux and macOS sandboxes. Whether tier-0 should fan out across
   both on every PR or only on nightly is a budget decision for the
@@ -157,8 +194,10 @@ leaves them unresolved.
 - The local sanity shim:
   [`tests/corpus_validator_strict.rs`](../tests/corpus_validator_strict.rs)
 - The fuzz layer this doc references:
-  [`docs/fuzz-strategy.md`](fuzz-strategy.md)
+  [`docs/04-fuzz-strategy.md`](04-fuzz-strategy.md)
 - The drift guards this doc references:
-  [`docs/corpus-drift-guards.md`](corpus-drift-guards.md)
+  [`docs/01-corpus-drift-guards.md`](01-corpus-drift-guards.md)
+- The preflights tier-1 enforces:
+  [`docs/02-sandbox-preflights.md`](02-sandbox-preflights.md)
 - The architectural context:
   [`docs/conformance-matrix-decode-audit.md`](conformance-matrix-decode-audit.md)

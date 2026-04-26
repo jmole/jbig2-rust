@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 use jbig2::util::sandbox::{KillReason, Sandbox, SandboxOutcome};
+use jbig2::util::vendor_anchor::{short_sha, AnchorStatus, VendorAnchor, VendorKind};
 use jbig2::validator::{self as v88, Lens as ValidatorLens};
 use jbig2::{
     Bitmap, Coding, EncoderConfig, GenericTemplate, Jbig2Decoder, Jbig2Encoder, Mode, RgbBitmap,
@@ -549,8 +550,26 @@ impl KnownIssue {
         let Some(vendor) = &self.vendor else {
             return None;
         };
-        match vendor.check(root) {
-            Ok(status) => Some(status),
+        let anchor = vendor.to_anchor();
+        match anchor.check(root) {
+            Ok(AnchorStatus::Ok { .. }) => Some(format!(
+                "ok ({}@{})",
+                anchor.path.display(),
+                anchor.short_expected()
+            )),
+            Ok(AnchorStatus::Mismatch { expected, actual }) => {
+                eprintln!(
+                    "warning: vendor pin mismatch for {}: catalog {}, actual {}",
+                    anchor.path.display(),
+                    short_sha(&expected),
+                    short_sha(&actual)
+                );
+                Some(format!(
+                    "mismatch (expected {}, actual {})",
+                    short_sha(&expected),
+                    short_sha(&actual)
+                ))
+            }
             Err(err) => {
                 eprintln!(
                     "warning: known-issues entry #{idx} vendor pin check failed for {} / {}: {err}",
@@ -585,42 +604,18 @@ impl ExpectedOutcome {
 }
 
 impl VendorPin {
-    fn check(&self, root: &Path) -> Result<String, String> {
+    fn to_anchor(&self) -> VendorAnchor {
         match self {
-            Self::GitSha { path, sha } => {
-                let actual = git_head(root, path)?;
-                if actual == *sha {
-                    Ok(format!("ok ({path}@{})", short_sha(sha)))
-                } else {
-                    eprintln!(
-                        "warning: vendor pin mismatch for {path}: catalog {}, actual {}",
-                        short_sha(sha),
-                        short_sha(&actual)
-                    );
-                    Ok(format!(
-                        "mismatch (expected {}, actual {})",
-                        short_sha(sha),
-                        short_sha(&actual)
-                    ))
-                }
-            }
-            Self::FileSha256 { path, sha256 } => {
-                let actual = file_sha256(&root.join(path))?;
-                if actual == *sha256 {
-                    Ok(format!("ok ({path}@{})", short_sha(sha256)))
-                } else {
-                    eprintln!(
-                        "warning: file hash mismatch for {path}: catalog {}, actual {}",
-                        short_sha(sha256),
-                        short_sha(&actual)
-                    );
-                    Ok(format!(
-                        "mismatch (expected {}, actual {})",
-                        short_sha(sha256),
-                        short_sha(&actual)
-                    ))
-                }
-            }
+            Self::GitSha { path, sha } => VendorAnchor {
+                path: PathBuf::from(path),
+                expected: sha.clone(),
+                kind: VendorKind::GitSha,
+            },
+            Self::FileSha256 { path, sha256 } => VendorAnchor {
+                path: PathBuf::from(path),
+                expected: sha256.clone(),
+                kind: VendorKind::FileSha256,
+            },
         }
     }
 
@@ -638,60 +633,6 @@ fn known_issues_path(root: &Path) -> PathBuf {
     root.join("tools")
         .join("conformance")
         .join("known-issues.ron")
-}
-
-fn git_head(root: &Path, rel_path: &str) -> Result<String, String> {
-    let path = root.join(rel_path);
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(&path)
-        .arg("rev-parse")
-        .arg("HEAD")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .map_err(|err| format!("spawn git for {rel_path}: {err}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "git rev-parse failed for {rel_path}: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-}
-
-fn file_sha256(path: &Path) -> Result<String, String> {
-    let output = Command::new("shasum")
-        .arg("-a")
-        .arg("256")
-        .arg(path)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .or_else(|_| {
-            Command::new("sha256sum")
-                .arg(path)
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .output()
-        })
-        .map_err(|err| format!("spawn sha256 tool for {path:?}: {err}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "hash command failed for {path:?}: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    stdout
-        .split_whitespace()
-        .next()
-        .map(|s| s.to_string())
-        .ok_or_else(|| format!("hash command produced no digest for {path:?}"))
-}
-
-fn short_sha(sha: &str) -> String {
-    sha.chars().take(12).collect()
 }
 
 struct Tools {
@@ -949,15 +890,14 @@ enum EncodeKind {
 }
 
 fn encode_rows(target: Target) -> Vec<EncodeRow> {
-    let rust =
-        |label: &'static str, cfg: fn() -> EncoderConfig, expectation: EncodeExpectation| {
-            EncodeRow {
-                label,
-                kind: EncodeKind::Rust(cfg),
-                is_ours: true,
-                expectation,
-            }
-        };
+    let rust = |label: &'static str, cfg: fn() -> EncoderConfig, expectation: EncodeExpectation| {
+        EncodeRow {
+            label,
+            kind: EncodeKind::Rust(cfg),
+            is_ours: true,
+            expectation,
+        }
+    };
     let system = |label: &'static str,
                   args: &'static [&'static str],
                   expectation: EncodeExpectation| EncodeRow {
@@ -999,7 +939,11 @@ fn encode_rows(target: Target) -> Vec<EncodeRow> {
     let all = [
         rust("rust:fast", EncoderConfig::fast, lossless),
         rust("rust:balanced", EncoderConfig::balanced, lossless),
-        rust("rust:max_compression", EncoderConfig::max_compression, lossless),
+        rust(
+            "rust:max_compression",
+            EncoderConfig::max_compression,
+            lossless,
+        ),
         rust("rust:generic_t0_no_tpgd", generic_t0_no_tpgd, lossless),
         rust("rust:generic_t0_tpgd", generic_t0_tpgd, lossless),
         rust("rust:symbol_lossy_t85", symbol_lossy_t85, lossy_symbol_rust),

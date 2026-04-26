@@ -7,3 +7,10 @@
 #[cfg(feature = "sandbox-runtime")]
 #[cfg_attr(docsrs, doc(cfg(feature = "sandbox-runtime")))]
 pub mod sandbox;
+
+#[cfg(any(feature = "conformance-tools", feature = "validator-corpus"))]
+#[cfg_attr(
+    docsrs,
+    doc(cfg(any(feature = "conformance-tools", feature = "validator-corpus")))
+)]
+pub mod vendor_anchor;

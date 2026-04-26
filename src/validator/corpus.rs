@@ -28,7 +28,7 @@
 //! is expected to do on a hostile input. It is deliberately coarser than the
 //! raw `SandboxOutcome` because two different kinds of crash (SIGABRT vs
 //! SIGSEGV) carry the same regression meaning at this layer — see
-//! `docs/external-decoder-taxonomy.md` for the rationale.
+//! `docs/05-external-decoder-taxonomy.md` for the rationale.
 
 #![cfg(feature = "validator-corpus")]
 
@@ -138,7 +138,7 @@ pub struct ValidatorExpectation {
     /// Every `CheckId` the validator was producing when the fixture was
     /// minted. Recorded as evidence; `corpus-validator --strict` checks that
     /// `primary_check_id` is still present, not that this set is unchanged
-    /// — see `docs/corpus-drift-guards.md` for the rationale.
+    /// — see `docs/01-corpus-drift-guards.md` for the rationale.
     #[serde(default)]
     pub check_ids: Vec<String>,
 }
@@ -178,10 +178,12 @@ impl Expected {
 
     /// Serialize and write to `path`. Pretty-prints in stable section order.
     pub fn write(&self, path: &Path) -> Result<(), ExpectedError> {
-        let body = self.to_toml_string().map_err(|err| ExpectedError::Serialize {
-            path: path.display().to_string(),
-            err: err.to_string(),
-        })?;
+        let body = self
+            .to_toml_string()
+            .map_err(|err| ExpectedError::Serialize {
+                path: path.display().to_string(),
+                err: err.to_string(),
+            })?;
         fs::write(path, body).map_err(|err| ExpectedError::Io {
             path: path.display().to_string(),
             err: err.to_string(),

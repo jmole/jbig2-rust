@@ -1,4 +1,4 @@
-# Fuzz strategy
+# 04 — Fuzz strategy
 
 This document motivates layering coverage-guided fuzzing on top of the
 deterministic corpus regression that ships in Phase 1. It is the
@@ -12,6 +12,42 @@ The intended reader is a maintainer or contributor weighing whether a
 fuzz layer is worth the cost. Today, the answer is "the deterministic
 corpus is the floor; without a fuzz layer, the project is leaving
 signal on the table." The rest of the doc explains why.
+
+## Sequence
+
+This is **step 4 of 5** in the corpus harness rollout.
+
+1. [`01-corpus-drift-guards.md`](01-corpus-drift-guards.md)
+2. [`02-sandbox-preflights.md`](02-sandbox-preflights.md)
+3. [`03-corpus-ci-goals.md`](03-corpus-ci-goals.md)
+4. **`04-fuzz-strategy.md` — you are here.**
+5. [`05-external-decoder-taxonomy.md`](05-external-decoder-taxonomy.md)
+
+**Prerequisites.** Step 1 (drift guards) at minimum, because fuzz
+seeds reuse the harvested corpus and the seed cross-check is the
+primary defence against silent corpus drift. Step 3 tier-0 should
+also be wired and trusted — fuzz output is much more useful when
+"this crash also breaks tier-0" is a one-command answer rather than a
+research project.
+
+**Why this comes after step 3, not before.** Fuzz output is
+*evidence*, not regression signal. The deterministic floor (step 3
+tier-0) has to be the established workflow before fuzz crashes have a
+clear path to becoming fixtures. Wiring fuzz before tier-0 is mature
+trains contributors to react to fuzz output as if it were CI signal,
+which is the auto-promotion failure mode this doc explicitly warns
+against.
+
+**Strict ordering rule.** Fuzz crashes never auto-promote into the
+regression corpus. The triage workflow described below is mandatory;
+no PR in this rollout should add an auto-promotion shortcut even if
+it looks cheap, because the failure mode (failing tests before the
+fix exists) is exactly the shape steps 1–3 are designed to prevent.
+
+**Unblocks.** Step 5 (matrix Bugzilla column) benefits from but does
+not require step 4. The taxonomy consolidation in step 5 should be
+designed with fuzz-derived fixtures in mind, but step 5 can land
+without step 4 having produced any artefacts yet.
 
 ## What we already get from the deterministic corpus
 
@@ -172,10 +208,12 @@ Things this doc deliberately leaves on the table.
 ## Pointers
 
 - The deterministic regression layer this layers on top of:
-  [`docs/corpus-ci-goals.md`](corpus-ci-goals.md)
+  [`docs/03-corpus-ci-goals.md`](03-corpus-ci-goals.md)
 - The fixture authoring tooling that the triage subcommand will
   extend: [`tools/corpus-mint/main.rs`](../tools/corpus-mint/main.rs)
 - The harvested corpus that seeds the fuzzer:
   [`tests/validator-corpus/bugzilla/harvested/`](../tests/validator-corpus/bugzilla/harvested/)
 - The drift guards that make fixture regeneration safe:
-  [`docs/corpus-drift-guards.md`](corpus-drift-guards.md)
+  [`docs/01-corpus-drift-guards.md`](01-corpus-drift-guards.md)
+- The taxonomy that fuzz-derived fixtures will plug into:
+  [`docs/05-external-decoder-taxonomy.md`](05-external-decoder-taxonomy.md)

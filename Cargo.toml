@@ -27,7 +27,7 @@ rayon = ["dep:rayon"]
 mmr = []
 cli = ["dep:clap", "dep:anyhow", "dep:image"]
 validator-cli = ["dep:anyhow", "dep:clap", "dep:serde", "dep:serde_json"]
-validator-corpus = ["dep:anyhow", "dep:clap", "dep:serde", "dep:serde_json", "dep:sha2", "dep:toml", "sandbox-runtime"]
+validator-corpus = ["dep:anyhow", "dep:clap", "dep:serde", "dep:serde_json", "dep:sha2", "dep:toml", "dep:ron", "sandbox-runtime"]
 c-decoders-asan = []
 conformance-tools = ["dep:ron", "dep:serde", "sandbox-runtime"]
 # Sandboxed external-process runner used by the conformance matrix, the

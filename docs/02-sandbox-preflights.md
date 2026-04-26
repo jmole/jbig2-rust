@@ -1,4 +1,4 @@
-# Sandbox preflights
+# 02 — Sandbox preflights
 
 This document motivates two guardrails the corpus harness does not yet
 enforce: vendor-SHA pinning across `corpus-validator`, and runtime
@@ -11,6 +11,40 @@ bitten — by a quiet failure mode. Both failure modes already exist
 in the pipeline today; the doc's job is to make them legible enough
 that the next plan implementing the preflights does not have to
 re-derive the motivation.
+
+## Sequence
+
+This is **step 2 of 5** in the corpus harness rollout.
+
+1. [`01-corpus-drift-guards.md`](01-corpus-drift-guards.md)
+2. **`02-sandbox-preflights.md` — you are here.**
+3. [`03-corpus-ci-goals.md`](03-corpus-ci-goals.md)
+4. [`04-fuzz-strategy.md`](04-fuzz-strategy.md)
+5. [`05-external-decoder-taxonomy.md`](05-external-decoder-taxonomy.md)
+
+**Prerequisites.** Step 1 (drift guards) does not strictly block step
+2, but the two share the same underlying "vendor anchor" helper. Land
+step 1 first so that helper exists; step 2 reuses it for the
+submodule-SHA cross-check rather than parallel-implementing one. See
+the *Relationship to corpus drift guards (step 1)* section in
+[`01-corpus-drift-guards.md`](01-corpus-drift-guards.md).
+
+**Hard sequencing rule for the wider plan.** External-decoder verdicts
+must not be committed into `expected.toml` (or enforced by
+`corpus-validator --strict`) until the vendor-SHA half of this
+preflight is in place. Recording a `decoder.jbig2dec.verdict =
+"RejectErr"` against an unpinned vendor binary is the silent
+bad-baseline failure mode this doc exists to prevent. If a future PR
+in this rollout baselines external-decoder expectations, that PR must
+also wire the vendor-SHA preflight (or land it in the immediately
+preceding PR). The sanitizer-canary half can land later — its absence
+weakens the regression net but does not poison committed baselines.
+
+**Unblocks.** Steps 3–5 all rely on `corpus-validator --strict` having
+trustworthy inputs. Tier-1 CI (step 3) running external decoders, the
+fuzz layer (step 4) seeded from a verified corpus, and the matrix
+Bugzilla column (step 5) all assume the preflight has already removed
+silent vendor drift from the failure-mode list.
 
 ## A quiet harness is a worse harness than a loud one
 
@@ -156,13 +190,41 @@ clear; the specifics are not.
   canary costs ~100 ms per impl and is borderline; the next plan
   should decide whether that is fine for tier-0 PR runs or whether
   it should run on tier-1 only. (See
-  [`docs/corpus-ci-goals.md`](corpus-ci-goals.md) for the tier
+  [`docs/03-corpus-ci-goals.md`](03-corpus-ci-goals.md) for the tier
   layering.)
 - **What happens when a contributor updates the SHA pin
   intentionally.** The preflight should refuse to run, but the
   remediation needs to mention the pin file as well as the
   submodule. A contributor doing a deliberate vendor bump should
   update both atomically.
+
+## Implementation status
+
+This section records what has landed in the narrowed vendor-SHA PR
+and what remains intentionally deferred.
+
+- **Landed now: vendor-SHA preflight.** This is the load-bearing half
+  for baseline safety: `corpus-validator` now refuses to score
+  `--with-c-decoders` against a drifted vendored decoder binary,
+  instead of silently re-scoring `expected.toml` against a moved
+  submodule.
+- **Deferred: sanitizer canary.** Current
+  `[decoder.jbig2dec].verdict` cells in the corpus are still
+  `Unknown`, and `corpus-validator --strict` skips `Unknown` expected
+  cells (see `collect_strict_mismatches` in
+  [`tools/corpus-validator/main.rs`](../tools/corpus-validator/main.rs)).
+  So deferring the canary does not weaken an active, committed crash
+  quality contract today.
+- **Hard sequencing rule.** Before any PR commits concrete
+  `jbig2dec` crash-quality expectations (for example a non-`Unknown`
+  verdict whose correctness depends on ASAN/SAN behavior), the
+  sanitizer canary becomes non-optional and must land in that PR or
+  the immediately preceding one. Vendor-SHA preflight protects
+  baseline identity; sanitizer canary protects crash-quality claims.
+- **Motivation still stands.** The "Failure mode 2: silent
+  non-sanitizer build" narrative above remains the canonical reason
+  for the canary; this status note only records why it is deferred in
+  the current step.
 
 ## Pointers
 
@@ -174,4 +236,6 @@ clear; the specifics are not.
   [`src/util/sandbox.rs`](../src/util/sandbox.rs) and
   [`docs/sandbox.md`](sandbox.md)
 - The CI policy this preflight would run inside:
-  [`docs/corpus-ci-goals.md`](corpus-ci-goals.md)
+  [`docs/03-corpus-ci-goals.md`](03-corpus-ci-goals.md)
+- The drift guard whose helper this preflight reuses:
+  [`docs/01-corpus-drift-guards.md`](01-corpus-drift-guards.md)

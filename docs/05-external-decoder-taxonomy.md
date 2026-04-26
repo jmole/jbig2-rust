@@ -1,4 +1,4 @@
-# External decoder taxonomy
+# 05 — External decoder taxonomy
 
 This document motivates consolidating the project's three vocabularies
 for "what a decoder did with a stream" into a single shared
@@ -11,6 +11,46 @@ The intended reader is a maintainer who has just spent twenty minutes
 translating between three legends to figure out whether a single
 upstream change broke something we care about. The point of this doc
 is to argue that they should not have to.
+
+## Sequence
+
+This is **step 5 of 5** in the corpus harness rollout — the last one.
+
+1. [`01-corpus-drift-guards.md`](01-corpus-drift-guards.md)
+2. [`02-sandbox-preflights.md`](02-sandbox-preflights.md)
+3. [`03-corpus-ci-goals.md`](03-corpus-ci-goals.md)
+4. [`04-fuzz-strategy.md`](04-fuzz-strategy.md)
+5. **`05-external-decoder-taxonomy.md` — you are here.**
+
+**Prerequisites.** Step 2 at minimum. The consolidation extracts a
+shared `Verdict` / `Disposition` module across `corpus-validator` and
+the conformance matrix; doing it before step 2's preflights are in
+place would force the new module to either embed or paper over the
+silent-vendor-drift failure mode. Step 4 is not strictly required,
+but the taxonomy should anticipate fuzz-derived fixtures (verdicts
+like `RejectErr` against minimized inputs) so the eventual fuzz
+triage tooling slots in cleanly.
+
+**Why this comes last.** Consolidation is a refactor whose value is
+proportional to how much behaviour each consumer already has. Doing
+it before steps 1–4 is premature abstraction: the consolidated enum
+would be guessing at variants the consumers had not yet generated
+real evidence for. Doing it after the consumers are exercised in
+anger means the consolidation is a mechanical extraction rather than
+a design exercise.
+
+**Strict ordering rule.** This step delivers the matrix Bugzilla
+column block. That block must reuse the same legend as the existing
+TT* block — adding a parallel legend is the failure mode this doc
+exists to prevent. Any PR adding the Bugzilla column without first
+landing the shared `Verdict` module is doing the work in the wrong
+order.
+
+**Unblocks.** Nothing further in this rollout. Step 5 is the
+finishing-line consolidation; future plans extending the harness
+(Java decoder verdicts, differential fuzzing, additional matrix
+columns) build on top of the consolidated taxonomy rather than
+extending it as part of the rollout.
 
 ## The fragmentation, today
 

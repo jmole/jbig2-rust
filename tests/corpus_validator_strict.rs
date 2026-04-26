@@ -53,3 +53,32 @@ fn corpus_validator_strict_smoke() {
         output.status,
     );
 }
+
+#[test]
+fn corpus_validator_vendor_preflight_override_smoke() {
+    let validator = env!("CARGO_BIN_EXE_corpus-validator");
+    let rust_decoder = env!("CARGO_BIN_EXE_jbig2-decode");
+
+    let output = Command::new(validator)
+        .current_dir(workspace_root())
+        .env("JBIG2_CORPUS_NO_VENDOR_CHECK", "1")
+        .arg("--filter")
+        .arg("__none__")
+        .arg("--rust-decoder")
+        .arg(rust_decoder)
+        .output()
+        .expect("spawn corpus-validator");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "corpus-validator preflight override smoke failed (status = {:?})\n\
+         stderr:\n{stderr}\nstdout:\n{stdout}",
+        output.status
+    );
+    assert!(
+        stderr.contains("preflight: rust skipped (binary not under vendor/<submodule>)"),
+        "missing preflight skip line in stderr:\n{stderr}"
+    );
+}

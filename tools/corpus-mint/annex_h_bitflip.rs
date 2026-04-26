@@ -129,9 +129,7 @@ pub fn run(root: &Path) -> Result<()> {
             fs::write(case_dir.join("meta.toml"), meta)?;
             Expected::validator(key.check_id.clone(), representative.findings.clone())
                 .write(&case_dir.join("expected.toml"))
-                .with_context(|| {
-                    format!("write expected metadata for {}", case_dir.display())
-                })?;
+                .with_context(|| format!("write expected metadata for {}", case_dir.display()))?;
         }
         index.push_str(&format!(
             "| `{}` | {} | {} | {} | {} | {} |\n",
