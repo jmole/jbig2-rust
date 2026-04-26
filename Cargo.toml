@@ -29,7 +29,7 @@ cli = ["dep:clap", "dep:anyhow", "dep:image"]
 validator-cli = ["dep:anyhow", "dep:clap", "dep:serde", "dep:serde_json"]
 validator-corpus = ["dep:anyhow", "dep:clap", "dep:serde", "dep:serde_json", "dep:sha2", "sandbox-runtime"]
 c-decoders-asan = []
-conformance-tools = ["dep:ron", "dep:serde"]
+conformance-tools = ["dep:ron", "dep:serde", "sandbox-runtime"]
 # Sandboxed external-process runner used by the conformance matrix, the
 # corpus runner, and the integration-test oracle helpers. Pulls in `libc`
 # for `setrlimit`/`kill`. Compile-once usable from both `tools/` and

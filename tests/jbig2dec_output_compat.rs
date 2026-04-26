@@ -3,6 +3,7 @@ use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use jbig2::util::sandbox::{Sandbox, SandboxOutcome};
 use jbig2::{Bitmap, Coding, EncoderConfig, GenericTemplate, Jbig2Encoder, Mode};
 use rand::seq::SliceRandom;
 use rand::SeedableRng;
@@ -287,21 +288,33 @@ fn decode_with_jbig2dec(
     entry: &CorpusEntry,
     case_name: &str,
 ) -> Result<(), String> {
-    let out = Command::new(jbig2dec)
-        .arg("-q")
+    let mut cmd = Command::new(jbig2dec);
+    cmd.arg("-q")
         .arg("--format")
         .arg("pbm")
         .arg("-o")
         .arg(output)
-        .arg(input)
-        .stderr(Stdio::piped())
-        .output()
-        .map_err(|err| {
-            format!(
-                "{} {case_name} jbig2dec spawn failed for {input:?}: {err}",
-                entry_label(entry)
-            )
-        })?;
+        .arg(input);
+
+    let workdir = output.parent().unwrap_or_else(|| Path::new("."));
+    let SandboxOutcome {
+        output: out,
+        kill_reason,
+        wall_elapsed,
+    } = decoder_sandbox(workdir).run(cmd).map_err(|err| {
+        format!(
+            "{} {case_name} jbig2dec spawn failed for {input:?}: {err}",
+            entry_label(entry)
+        )
+    })?;
+    if let Some(reason) = kill_reason {
+        return Err(format!(
+            "{} {case_name} jbig2dec sandbox-killed ({reason:?}) after {:.1}s for {input:?}: {}",
+            entry_label(entry),
+            wall_elapsed.as_secs_f32(),
+            String::from_utf8_lossy(&out.stderr).trim_end(),
+        ));
+    }
     if !out.status.success() {
         return Err(format!(
             "{} {case_name} jbig2dec failed for {input:?} with {}: {}",
@@ -311,6 +324,19 @@ fn decode_with_jbig2dec(
         ));
     }
     Ok(())
+}
+
+fn decoder_sandbox(workdir: &Path) -> Sandbox {
+    let mut sb = Sandbox::for_decoder()
+        .ro_path(PathBuf::from(env!("CARGO_MANIFEST_DIR")))
+        .rw_path(workdir.to_path_buf())
+        .rw_path(PathBuf::from("/tmp"));
+    if let Ok(extra) = std::env::var("JBIG2_SANDBOX_EXTRA_RO") {
+        for path in std::env::split_paths(&extra) {
+            sb = sb.ro_path(path);
+        }
+    }
+    sb
 }
 
 fn load_pbm_p4(path: &Path) -> Result<Bitmap, String> {

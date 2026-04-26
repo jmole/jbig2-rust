@@ -4,6 +4,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::OnceLock;
 
+use jbig2::util::sandbox::{Sandbox, SandboxOutcome};
 use jbig2::Bitmap;
 
 static WARNED_MISSING_JBIG2DEC: OnceLock<()> = OnceLock::new();
@@ -23,15 +24,13 @@ pub fn decode_with_jbig2dec(jbig2_bytes: &[u8]) -> Option<Bitmap> {
     let output = workdir.join("output.pbm");
     std::fs::write(&input, jbig2_bytes).expect("write jbig2dec oracle input");
 
-    let status = Command::new(&bin)
-        .arg("--format")
+    let mut cmd = Command::new(&bin);
+    cmd.arg("--format")
         .arg("pbm")
         .arg("-o")
         .arg(&output)
-        .arg(&input)
-        .status()
-        .unwrap_or_else(|err| panic!("spawn jbig2dec {:?}: {err}", bin));
-    assert!(status.success(), "jbig2dec {:?} exited with {status}", bin);
+        .arg(&input);
+    run_decoder_oracle(cmd, "jbig2dec", &workdir);
     Some(load_pbm_p4(&output))
 }
 
@@ -50,19 +49,53 @@ pub fn decode_with_jbig2_imageio(jbig2_bytes: &[u8]) -> Option<Bitmap> {
     let output = workdir.join("output.pbm");
     std::fs::write(&input, jbig2_bytes).expect("write jbig2-imageio oracle input");
 
-    let program = &cmd[0];
-    let status = Command::new(program)
-        .args(&cmd[1..])
-        .arg(&input)
-        .arg(&output)
-        .status()
-        .unwrap_or_else(|err| panic!("spawn jbig2-imageio {:?}: {err}", program));
-    assert!(
-        status.success(),
-        "jbig2-imageio {:?} exited with {status}",
-        program
-    );
+    let program = cmd[0].clone();
+    let mut command = Command::new(&program);
+    command.args(&cmd[1..]).arg(&input).arg(&output);
+    run_decoder_oracle(command, "jbig2-imageio", &workdir);
     Some(load_pbm_p4(&output))
+}
+
+fn run_decoder_oracle(cmd: Command, label: &str, workdir: &Path) {
+    let program = cmd.get_program().to_owned();
+    let outcome = decoder_sandbox(workdir)
+        .run(cmd)
+        .unwrap_or_else(|err| panic!("spawn {label} {:?}: {err}", program));
+    let SandboxOutcome {
+        output,
+        kill_reason,
+        wall_elapsed,
+    } = outcome;
+    if let Some(reason) = kill_reason {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        panic!(
+            "{label} {:?} sandbox-killed ({reason:?}) after {:.1}s: stderr=\"{}\"",
+            program,
+            wall_elapsed.as_secs_f32(),
+            stderr.trim_end(),
+        );
+    }
+    assert!(
+        output.status.success(),
+        "{label} {:?} exited with {} after {:.1}s: stderr=\"{}\"",
+        program,
+        output.status,
+        wall_elapsed.as_secs_f32(),
+        String::from_utf8_lossy(&output.stderr).trim_end(),
+    );
+}
+
+fn decoder_sandbox(workdir: &Path) -> Sandbox {
+    let mut sb = Sandbox::for_decoder()
+        .ro_path(PathBuf::from(env!("CARGO_MANIFEST_DIR")))
+        .rw_path(workdir.to_path_buf())
+        .rw_path(PathBuf::from("/tmp"));
+    if let Ok(extra) = std::env::var("JBIG2_SANDBOX_EXTRA_RO") {
+        for path in std::env::split_paths(&extra) {
+            sb = sb.ro_path(path);
+        }
+    }
+    sb
 }
 
 fn oracle_workdir(tag: &str) -> PathBuf {

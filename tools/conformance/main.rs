@@ -3,12 +3,113 @@ use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::{Cursor, IsTerminal};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, Output, Stdio};
 
+use jbig2::util::sandbox::{KillReason, Sandbox, SandboxOutcome};
 use jbig2::{
     Bitmap, Coding, EncoderConfig, GenericTemplate, Jbig2Decoder, Jbig2Encoder, Mode, RgbBitmap,
 };
+use jbig2::validator::{self as v88, Lens as ValidatorLens};
 use serde::Deserialize;
+
+/// Classification of an external C/Java binary so the sandbox can apply
+/// the right preset and the failure messages can include a matching
+/// vocabulary token (`TIMEOUT`, `OOM`, `SIG=11`, `SAN`).
+#[derive(Clone, Copy, Debug)]
+enum ExternalKind {
+    /// Read fuzzy / hostile bitstream and decode. Strict limits.
+    Decoder,
+    /// Read trusted bitmap, produce JBIG2. Looser limits.
+    Encoder,
+    /// Compare two decoded bitmaps. Looser limits.
+    Comparator,
+}
+
+/// Run an external binary inside the configured sandbox and translate
+/// any sandbox- or signal-induced failure into the matrix-cell
+/// vocabulary the rest of the renderer already understands.
+fn run_external(
+    tools: &Tools,
+    cmd: Command,
+    label: &str,
+    kind: ExternalKind,
+) -> Result<Output, String> {
+    let sandbox = match kind {
+        ExternalKind::Decoder => &tools.sandbox_decoder,
+        ExternalKind::Encoder => &tools.sandbox_encoder,
+        ExternalKind::Comparator => &tools.sandbox_comparator,
+    };
+    let outcome = sandbox
+        .run(cmd)
+        .map_err(|err| format!("{label}: sandbox spawn failed: {err}"))?;
+    classify_external(label, outcome)
+}
+
+fn classify_external(label: &str, outcome: SandboxOutcome) -> Result<Output, String> {
+    let stderr_str = String::from_utf8_lossy(&outcome.output.stderr);
+    let stdout_str = String::from_utf8_lossy(&outcome.output.stdout);
+
+    if let Some(reason) = outcome.kill_reason {
+        let token = match reason {
+            KillReason::Timeout => "TIMEOUT",
+            KillReason::AddressSpace => "OOM",
+            KillReason::OutputBytes => "OUTCAP",
+        };
+        return Err(format!(
+            "{label}: sandbox killed ({token} after {}ms): {}{}",
+            outcome.wall_elapsed.as_millis(),
+            stdout_str.trim(),
+            stderr_str.trim()
+        ));
+    }
+
+    if let Some(token) = sanitizer_token(&stderr_str) {
+        return Err(format!(
+            "{label}: SAN({token}): {}",
+            flatten_msg(stderr_str.trim())
+        ));
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(sig) = outcome.output.status.signal() {
+            return Err(format!(
+                "{label}: SIG={} {}{}",
+                sig,
+                stdout_str.trim(),
+                stderr_str.trim()
+            ));
+        }
+    }
+
+    if outcome.output.status.success() {
+        Ok(outcome.output)
+    } else {
+        Err(format!(
+            "{label}: exited {}: {}{}",
+            outcome.output.status,
+            stdout_str.trim(),
+            stderr_str.trim()
+        ))
+    }
+}
+
+fn sanitizer_token(stderr: &str) -> Option<&'static str> {
+    if stderr.contains("AddressSanitizer:") {
+        Some("ASAN")
+    } else if stderr.contains("UndefinedBehaviorSanitizer:") {
+        Some("UBSAN")
+    } else if stderr.contains("LeakSanitizer:") {
+        Some("LSAN")
+    } else if stderr.contains("ThreadSanitizer:") {
+        Some("TSAN")
+    } else if stderr.contains("MemorySanitizer:") {
+        Some("MSAN")
+    } else {
+        None
+    }
+}
 
 fn main() {
     if let Err(err) = run() {
@@ -603,6 +704,9 @@ struct Tools {
     vendor_jbig2dec: Option<PathBuf>,
     itu_t88: Option<T88Tools>,
     java_cmd: Option<Vec<OsString>>,
+    sandbox_decoder: Sandbox,
+    sandbox_encoder: Sandbox,
+    sandbox_comparator: Sandbox,
 }
 
 #[derive(Clone)]
@@ -612,7 +716,22 @@ struct T88Tools {
 }
 
 impl Tools {
-    fn resolve(root: &Path, _workdir: &Path) -> Self {
+    fn resolve(root: &Path, workdir: &Path) -> Self {
+        // Every C/Java run needs to read the workspace (vendor binaries
+        // + conformance fixtures) and to write into the per-run workdir
+        // plus a couple of OS scratch dirs that JVMs and shells touch
+        // unconditionally. Detected once and shared across all
+        // invocations to avoid re-detecting the backend per cell.
+        let mk = |sb: Sandbox| {
+            let mut sb = sb
+                .ro_path(root.to_path_buf())
+                .rw_path(workdir.to_path_buf())
+                .rw_path(PathBuf::from("/tmp"));
+            for extra in extra_runtime_paths() {
+                sb = sb.ro_path(extra);
+            }
+            sb
+        };
         Self {
             system_jbig2enc: system_jbig2enc_bin(),
             system_jbig2dec: system_jbig2dec_bin(),
@@ -620,8 +739,38 @@ impl Tools {
             vendor_jbig2dec: vendor_jbig2dec_bin(root),
             itu_t88: t88_tools(root),
             java_cmd: java_cmd(root),
+            sandbox_decoder: mk(Sandbox::for_decoder()),
+            sandbox_encoder: mk(Sandbox::for_encoder()),
+            sandbox_comparator: mk(Sandbox::for_comparator()),
         }
     }
+}
+
+/// Extra read-only paths the JVM and reference encoders touch outside
+/// the workspace (Maven cache, JDK, Homebrew binaries, etc.).
+fn extra_runtime_paths() -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if let Some(java_home) = std::env::var_os("JAVA_HOME") {
+        out.push(PathBuf::from(java_home));
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = PathBuf::from(home);
+        out.push(home.join(".m2"));
+    }
+    let candidates = [
+        "/opt/homebrew",
+        "/usr/local/opt/openjdk",
+        "/Library/Java",
+        "/System/Library/Java",
+        "/usr/local/lib",
+    ];
+    for c in candidates {
+        let p = PathBuf::from(c);
+        if p.exists() {
+            out.push(p);
+        }
+    }
+    out
 }
 
 fn run_decode_matrix(
@@ -712,12 +861,23 @@ fn run_encode_matrix(
                 Some(reason) => Cell::blank(reason),
                 None => match encode_with(row, source, workdir, tools) {
                     EncodeAttempt::Bytes(bytes) => {
-                        match oracle_decode_and_compare(t88, &bytes, source, workdir, row.label) {
-                            Ok(mse) if mse == 0.0 => Cell::ok("mse=0"),
-                            Ok(mse) => Cell::lossy(format!("mse={}", format_mse(mse))),
-                            Err(err) => {
-                                Cell::fail(row.is_ours, format!("FAIL(dec: {})", flatten_msg(&err)))
-                            }
+                        let validator_token = validator_oracle_token(&bytes);
+                        match oracle_decode_and_compare(tools, t88, &bytes, source, workdir, row.label) {
+                            Ok(mse) if mse == 0.0 => Cell::ok(annotate_with_validator(
+                                "mse=0",
+                                &validator_token,
+                            )),
+                            Ok(mse) => Cell::lossy(annotate_with_validator(
+                                &format!("mse={}", format_mse(mse)),
+                                &validator_token,
+                            )),
+                            Err(err) => Cell::fail(
+                                row.is_ours,
+                                annotate_with_validator(
+                                    &format!("FAIL(dec: {})", flatten_msg(&err)),
+                                    &validator_token,
+                                ),
+                            ),
                         }
                     }
                     EncodeAttempt::Skip(reason) => Cell::skip(reason),
@@ -1116,7 +1276,7 @@ fn run_self_check(workdir: &Path, tools: &Tools) -> Result<(), String> {
         .as_deref()
         .or(tools.system_jbig2dec.as_deref())
     {
-        let pages = decode_with_jbig2dec_bin(bin, &input, &workdir.join("self-check.pbm"))?;
+        let pages = decode_with_jbig2dec_bin(tools, bin, &input, &workdir.join("self-check.pbm"))?;
         compare_page(
             pages
                 .first()
@@ -1163,6 +1323,7 @@ fn decode_with(
                 return DecodeAttempt::Skip("no binary");
             };
             decode_with_jbig2dec_bin(
+                tools,
                 bin,
                 &vector.path,
                 &workdir.join(format!("{}-system.pbm", vector.label)),
@@ -1175,6 +1336,7 @@ fn decode_with(
                 return DecodeAttempt::Skip("no binary");
             };
             decode_with_jbig2dec_bin(
+                tools,
                 bin,
                 &vector.path,
                 &workdir.join(format!("{}-jbig2dec.pbm", vector.label)),
@@ -1187,6 +1349,7 @@ fn decode_with(
                 return DecodeAttempt::Skip("no binary");
             };
             decode_with_t88(
+                tools,
                 t88,
                 &vector.path,
                 &workdir.join(format!("t88-{}", vector.label)),
@@ -1200,6 +1363,7 @@ fn decode_with(
                 return DecodeAttempt::Skip("no binary");
             };
             match decode_with_java(
+                tools,
                 cmd,
                 &vector.path,
                 &workdir.join(format!("{}-java.pbm", vector.label)),
@@ -1269,21 +1433,22 @@ fn encode_with(
             let Some(bin) = tools.system_jbig2enc.as_deref() else {
                 return EncodeAttempt::Skip("no binary");
             };
-            encode_jbig2enc(bin, args, source, &workdir.join("encode-system"))
+            encode_jbig2enc(tools, bin, args, source, &workdir.join("encode-system"))
                 .map(EncodeAttempt::Bytes)
         }
         EncodeKind::VendorJbig2enc(args) => {
             let Some(bin) = tools.vendor_jbig2enc.as_deref() else {
                 return EncodeAttempt::Skip("no binary");
             };
-            encode_jbig2enc(bin, args, source, &workdir.join("encode-vendor"))
+            encode_jbig2enc(tools, bin, args, source, &workdir.join("encode-vendor"))
                 .map(EncodeAttempt::Bytes)
         }
         EncodeKind::ItuT88(ini) => {
             let Some(t88) = tools.itu_t88.as_ref() else {
                 return EncodeAttempt::Skip("no binary");
             };
-            encode_t88(t88, ini, source, &workdir.join("encode-t88")).map(EncodeAttempt::Bytes)
+            encode_t88(tools, t88, ini, source, &workdir.join("encode-t88"))
+                .map(EncodeAttempt::Bytes)
         }
     }
     .unwrap_or_else(EncodeAttempt::Fail)
@@ -1303,6 +1468,7 @@ fn encode_rust(source: &EncodeSource, cfg: EncoderConfig) -> Result<Vec<u8>, Str
 }
 
 fn encode_jbig2enc(
+    tools: &Tools,
     bin: &Path,
     args: &[&str],
     source: &EncodeSource,
@@ -1312,16 +1478,14 @@ fn encode_jbig2enc(
     let out = workdir.join(format!("{}.jb2", safe_name(source.label)));
     let file = File::create(&out).map_err(|err| format!("create {out:?}: {err}"))?;
     let mut cmd = Command::new(bin);
-    cmd.args(args)
-        .arg(&source.path)
-        .stdout(Stdio::from(file))
-        .stderr(Stdio::piped());
-    run_output(cmd, "jbig2enc encode")?;
+    cmd.args(args).arg(&source.path).stdout(Stdio::from(file));
+    run_external(tools, cmd, "jbig2enc encode", ExternalKind::Encoder)?;
     fs::read(&out).map_err(|err| format!("read {out:?}: {err}"))
 }
 
 fn encode_t88(
-    tools: &T88Tools,
+    tools: &Tools,
+    t88: &T88Tools,
     ini: Option<&str>,
     source: &EncodeSource,
     workdir: &Path,
@@ -1333,7 +1497,7 @@ fn encode_t88(
         safe_name(source.label),
         ini.unwrap_or("default")
     ));
-    let mut cmd = Command::new(&tools.jbig2);
+    let mut cmd = Command::new(&t88.jbig2);
     cmd.arg("-i")
         .arg(input_stem)
         .arg("-f")
@@ -1342,19 +1506,18 @@ fn encode_t88(
         .arg(&out_stem)
         .arg("-F")
         .arg("jb2")
-        .current_dir(workdir)
-        .stderr(Stdio::piped())
-        .stdout(Stdio::piped());
+        .current_dir(workdir);
     if let Some(ini) = ini {
         cmd.arg("-ini").arg(t88_test_dir().join(ini));
     }
-    run_output(cmd, "itu-t88 encode")?;
+    run_external(tools, cmd, "itu-t88 encode", ExternalKind::Encoder)?;
     let out = append_extension(&out_stem, "jb2")?;
     fs::read(&out).map_err(|err| format!("read {out:?}: {err}"))
 }
 
 fn oracle_decode_and_compare(
-    tools: &T88Tools,
+    tools: &Tools,
+    t88: &T88Tools,
     bytes: &[u8],
     source: &EncodeSource,
     workdir: &Path,
@@ -1366,7 +1529,7 @@ fn oracle_decode_and_compare(
     let input = input_stem.with_extension("jb2");
     fs::write(&input, bytes).map_err(|err| format!("write oracle input {input:?}: {err}"))?;
     let decoded_stem = dir.join("decoded");
-    let mut dec = Command::new(&tools.jbig2);
+    let mut dec = Command::new(&t88.jbig2);
     dec.arg("-i")
         .arg(&input_stem)
         .arg("-f")
@@ -1375,14 +1538,12 @@ fn oracle_decode_and_compare(
         .arg(&decoded_stem)
         .arg("-F")
         .arg("bmp")
-        .current_dir(&dir)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    run_output(dec, "itu-t88 oracle decode")?;
+        .current_dir(&dir);
+    run_external(tools, dec, "itu-t88 oracle decode", ExternalKind::Decoder)?;
 
     let source_stem = strip_ext(&source.path)?;
     let target_stem = decoded_stem.with_file_name("decoded00");
-    let mut cmp = Command::new(&tools.imgcomp);
+    let mut cmp = Command::new(&t88.imgcomp);
     cmp.arg("-t")
         .arg(source_stem)
         .arg("-f")
@@ -1393,10 +1554,8 @@ fn oracle_decode_and_compare(
         .arg("bmp")
         .arg("-m")
         .arg("mse")
-        .current_dir(&dir)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let output = run_output(cmp, "itu-t88 imgcomp")?;
+        .current_dir(&dir);
+    let output = run_external(tools, cmp, "itu-t88 imgcomp", ExternalKind::Comparator)?;
     parse_distortion(&String::from_utf8_lossy(&output.stdout))
 }
 
@@ -1431,19 +1590,14 @@ fn decode_with_rust(path: &Path, expected_pages: usize) -> Result<Vec<PageImage>
 }
 
 fn decode_with_jbig2dec_bin(
+    tools: &Tools,
     bin: &Path,
     input: &Path,
     output: &Path,
 ) -> Result<Vec<PageImage>, String> {
     let mut cmd = Command::new(bin);
-    cmd.arg("--format")
-        .arg("pbm")
-        .arg("-o")
-        .arg(output)
-        .arg(input)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let out = run_output(cmd, "jbig2dec decode")?;
+    cmd.arg("--format").arg("pbm").arg("-o").arg(output).arg(input);
+    let out = run_external(tools, cmd, "jbig2dec decode", ExternalKind::Decoder)?;
     let diagnostics = format!(
         "{}{}",
         String::from_utf8_lossy(&out.stdout),
@@ -1458,23 +1612,24 @@ fn decode_with_jbig2dec_bin(
     parse_pbm_sequence(output).map(|pages| pages.into_iter().map(PageImage::Mono).collect())
 }
 
-fn decode_with_java(cmd: &[OsString], input: &Path, output: &Path) -> Result<Vec<Bitmap>, String> {
+fn decode_with_java(
+    tools: &Tools,
+    cmd: &[OsString],
+    input: &Path,
+    output: &Path,
+) -> Result<Vec<Bitmap>, String> {
     let Some(program) = cmd.first() else {
         return Err("empty java command".to_string());
     };
     let mut command = Command::new(program);
-    command
-        .args(&cmd[1..])
-        .arg(input)
-        .arg(output)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    run_output(command, "jbig2-imageio decode")?;
+    command.args(&cmd[1..]).arg(input).arg(output);
+    run_external(tools, command, "jbig2-imageio decode", ExternalKind::Decoder)?;
     parse_pbm_sequence(output)
 }
 
 fn decode_with_t88(
-    tools: &T88Tools,
+    tools: &Tools,
+    t88: &T88Tools,
     input: &Path,
     out_dir: &Path,
     expected_pages: usize,
@@ -1482,7 +1637,7 @@ fn decode_with_t88(
     reset_dir(out_dir)?;
     let input_stem = copy_as_jb2_stem(input, out_dir)?;
     let out_stem = out_dir.join("page");
-    let mut cmd = Command::new(&tools.jbig2);
+    let mut cmd = Command::new(&t88.jbig2);
     cmd.arg("-i")
         .arg(&input_stem)
         .arg("-f")
@@ -1491,10 +1646,8 @@ fn decode_with_t88(
         .arg(&out_stem)
         .arg("-F")
         .arg("bmp")
-        .current_dir(out_dir)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    run_output(cmd, "itu-t88 decode")?;
+        .current_dir(out_dir);
+    run_external(tools, cmd, "itu-t88 decode", ExternalKind::Decoder)?;
     let mut pages = Vec::new();
     for idx in 0..expected_pages {
         let bmp = out_dir.join(format!("page{idx:02}.bmp"));
@@ -2408,23 +2561,6 @@ fn which_on_path(name: &str) -> Option<PathBuf> {
     None
 }
 
-fn run_output(mut cmd: Command, label: &str) -> Result<std::process::Output, String> {
-    let out = cmd
-        .output()
-        .map_err(|err| format!("{label}: spawn failed: {err}"))?;
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        return Err(format!(
-            "{label}: exited {}: {}{}",
-            out.status,
-            stdout.trim(),
-            stderr.trim()
-        ));
-    }
-    Ok(out)
-}
-
 fn strip_ext(path: &Path) -> Result<PathBuf, String> {
     let parent = path.parent().unwrap_or_else(|| Path::new(""));
     let stem = path
@@ -2463,4 +2599,13 @@ fn format_mse(mse: f64) -> String {
     } else {
         format!("{mse:.6}")
     }
+}
+
+fn validator_oracle_token(bytes: &[u8]) -> String {
+    let report = v88::validate(bytes, ValidatorLens::StrictT88);
+    report.render_matrix_cell()
+}
+
+fn annotate_with_validator(verdict: &str, validator_token: &str) -> String {
+    format!("{verdict} v88={validator_token}")
 }
