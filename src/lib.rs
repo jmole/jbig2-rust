@@ -91,6 +91,7 @@ pub mod error;
 pub mod rgb_bitmap;
 pub mod segments;
 pub mod symbol;
+pub mod util;
 
 pub use bitmap::Bitmap;
 pub use decoder::{DecodedPage, Jbig2Decoder};
