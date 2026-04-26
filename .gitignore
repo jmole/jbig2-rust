@@ -27,7 +27,7 @@ Cargo.lock.bak
 # Patent corpus (large)
 patent-samples
 
-# Local sandbox CARGO_HOME (see .cursor/rules/cargo-home-sandbox.mdc)
+# Local sandbox CARGO_HOME
 /.cargo/
 
 # Cursor project rules / local state

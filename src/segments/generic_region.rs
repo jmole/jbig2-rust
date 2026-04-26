@@ -35,10 +35,9 @@
 //!
 //! # When is a second fast path worth it?
 //!
-//! `benches/codec.rs` has a `decode/generic/arith_fallbacks` group that
-//! decodes the same text-shaped 512×512 page through every non-T0-nominal
-//! path. Measured on an Apple-silicon laptop (criterion, `--release`,
-//! short-measurement profile):
+//! A local decode microbenchmark decoded the same text-shaped 512×512 page
+//! through every non-T0-nominal path. Measured on an Apple-silicon laptop
+//! (`--release`, short-measurement profile):
 //!
 //! | Path                                 | Throughput   | vs T0 nominal |
 //! |--------------------------------------|--------------|---------------|
