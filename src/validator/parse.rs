@@ -185,7 +185,7 @@ fn parse_segment(
             | ((bytes[cursor + 1] as u32) << 8)
             | (bytes[cursor + 2] as u32);
         cursor += 3;
-        let retain_len = (num_ref as usize + 1 + 7) / 8;
+        let retain_len = (num_ref as usize + 1).div_ceil(8);
         if bytes.len().saturating_sub(cursor) < retain_len {
             diagnostic(
                 tree,

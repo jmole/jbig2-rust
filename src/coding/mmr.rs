@@ -520,7 +520,7 @@ pub fn encode_t6_line(w: &mut BitWriter, cur_line: &[bool], ref_line: &[bool]) {
             w.write(CTRL_H, CTRL_H_LEN);
             let a2 = next_changing(cur_line, a1 as isize, color_at(cur_line, a1 as isize));
             let (r1, r2) = (a1.saturating_sub(a0.max(0) as usize), a2.saturating_sub(a1));
-            let (c1_white, _c2_white) = (a0_color == false, a0_color == true);
+            let (c1_white, _c2_white) = (!a0_color, a0_color);
             let _ = _c2_white;
             encode_run(w, r1 as u32, c1_white);
             encode_run(w, r2 as u32, !c1_white);
@@ -543,8 +543,8 @@ pub fn decode_t6_line(
     let mut cur = vec![false; width];
     let mut a0: isize = -1;
     let mut a0_color = false;
-    while (a0 as isize) < width as isize {
-        if (a0 as isize) >= width as isize {
+    while a0 < width as isize {
+        if a0 >= width as isize {
             break;
         }
         let mode = read_ctrl(r)?;

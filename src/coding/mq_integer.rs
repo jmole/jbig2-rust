@@ -164,7 +164,7 @@ pub fn decode_integer(dec: &mut MqDecoder<'_>, cxs: &mut MqContexts, base: usize
         } else {
             // Safe: v is in [1 .. 2^32 + 4436]; wrapping cast gives us back the
             // original negative value because we code absolute magnitude.
-            Some((v as i64 * -1) as i32)
+            Some(-(v as i64) as i32)
         }
     } else {
         Some(v as i32)

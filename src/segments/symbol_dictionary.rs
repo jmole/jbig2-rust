@@ -233,7 +233,7 @@ pub fn decode_symbol_dictionary_with_contexts(
     header: &SymbolDictionaryHeader,
     body: &[u8],
     import_symbols: &[&Bitmap],
-    mut cxs: &mut MqContexts,
+    cxs: &mut MqContexts,
 ) -> Jbig2Result<DecodedSymbolDictionary> {
     if header.sdhuff {
         return decode_symbol_dictionary_huffman(header, body, import_symbols);
@@ -253,7 +253,7 @@ pub fn decode_symbol_dictionary_with_contexts(
     let mut hc_height: i32 = 0;
     while (new_symbols.len() as u32) < header.num_new_syms {
         // Step 4 b): height-class delta height (must not be OOB).
-        let hcdh = decode_integer(&mut dec, &mut cxs, IADH).ok_or(Jbig2Error::InvalidHuffman(
+        let hcdh = decode_integer(&mut dec, cxs, IADH).ok_or(Jbig2Error::InvalidHuffman(
             "symbol dictionary: IADH returned OOB",
         ))?;
         hc_height = hc_height.saturating_add(hcdh);
@@ -272,7 +272,7 @@ pub fn decode_symbol_dictionary_with_contexts(
             if header.sdrefagg && (new_symbols.len() as u32) >= header.num_new_syms {
                 break;
             }
-            let dw = decode_integer(&mut dec, &mut cxs, IADW);
+            let dw = decode_integer(&mut dec, cxs, IADW);
             let dw = match dw {
                 Some(v) => v,
                 None => break,
@@ -291,7 +291,7 @@ pub fn decode_symbol_dictionary_with_contexts(
             let bm = if header.sdrefagg {
                 decode_refagg_symbol(
                     &mut dec,
-                    &mut cxs,
+                    cxs,
                     sym_width as u32,
                     hc_height as u32,
                     header,
@@ -301,7 +301,7 @@ pub fn decode_symbol_dictionary_with_contexts(
             } else {
                 decode_generic_bitmap(
                     &mut dec,
-                    &mut cxs,
+                    cxs,
                     sym_width as u32,
                     hc_height as u32,
                     header.sd_template,
@@ -339,7 +339,7 @@ pub fn decode_symbol_dictionary_with_contexts(
             exhausted_body = true;
             break;
         }
-        let run = decode_integer(&mut dec, &mut cxs, IAEX).ok_or(Jbig2Error::InvalidHuffman(
+        let run = decode_integer(&mut dec, cxs, IAEX).ok_or(Jbig2Error::InvalidHuffman(
             "symbol dictionary: IAEX returned OOB",
         ))? as u32;
         let end = idx.checked_add(run).ok_or(Jbig2Error::OutOfRange(
@@ -525,7 +525,7 @@ fn decode_symbol_dictionary_huffman(
         r.byte_align();
 
         let total_width: u32 = widths.iter().sum::<i32>() as u32;
-        let bytes_per_row = ((total_width + 7) / 8) as usize;
+        let bytes_per_row = total_width.div_ceil(8) as usize;
         if bmsize == 0 {
             // Uncompressed: HCHEIGHT × ⌈TOTWIDTH/8⌉ bytes packed MSB-first
             // with 0..7 padding bits per row. We decode into a single
@@ -1102,7 +1102,7 @@ mod tests {
         let import = mkglyph(9, 11, 5);
         let mut variant = import.clone();
         variant.set_pixel(0, 0, variant.get_pixel(0, 0) ^ 1);
-        let imports_owned = vec![import.clone()];
+        let imports_owned = [import.clone()];
         let imports: Vec<&Bitmap> = imports_owned.iter().collect();
         let syms = vec![NewSymbol {
             target: variant.clone(),
@@ -1122,7 +1122,7 @@ mod tests {
         let mut variant = import.clone();
         variant.set_pixel(2, 3, variant.get_pixel(2, 3) ^ 1);
         variant.set_pixel(7, 9, variant.get_pixel(7, 9) ^ 1);
-        let imports_owned = vec![import.clone()];
+        let imports_owned = [import.clone()];
         let imports: Vec<&Bitmap> = imports_owned.iter().collect();
         // First new symbol refines against the import; second refines
         // against the first new symbol (reference_id = 1 = imports.len() + 0).

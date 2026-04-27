@@ -219,10 +219,8 @@ pub fn encode_refinement_region(
         for x in 0..width as i32 {
             let ref_x = x - reference_dx;
             let ref_y = y - reference_dy;
-            if ltp == 1 {
-                if uniform_ref_neighbourhood(reference, ref_x, ref_y).is_some() {
-                    continue;
-                }
+            if ltp == 1 && uniform_ref_neighbourhood(reference, ref_x, ref_y).is_some() {
+                continue;
             }
             let cx = build_refinement_ctx(template, target, reference, x, y, ref_x, ref_y, at);
             let bit = target.get_pixel(x, y);

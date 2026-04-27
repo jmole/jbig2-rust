@@ -214,7 +214,7 @@ impl Report {
                 continue;
             }
             let id = finding.check_id.as_str();
-            if seen.iter().any(|existing| *existing == id) {
+            if seen.contains(&id) {
                 continue;
             }
             seen.push(id);

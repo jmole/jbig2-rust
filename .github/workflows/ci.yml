@@ -26,6 +26,19 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Run clippy (warning-only)
+        run: cargo clippy --workspace --all-targets --features validator-corpus,conformance-tools,sandbox-runtime,cli,validator-cli
+
   test:
     runs-on: ubuntu-latest
     steps:

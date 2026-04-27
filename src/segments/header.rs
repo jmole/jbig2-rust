@@ -132,7 +132,7 @@ impl SegmentHeader {
                 | (rest[0] as u32) << 16
                 | (rest[1] as u32) << 8
                 | (rest[2] as u32);
-            let n_retain_bytes = ((num + 1) as usize + 7) / 8;
+            let n_retain_bytes = ((num + 1) as usize).div_ceil(8);
             let mut retain = vec![0u8; n_retain_bytes];
             read_exact(r, &mut retain)?;
             // We have not yet parsed retain_bits as booleans; do that below
@@ -252,7 +252,7 @@ impl SegmentHeader {
             w.write_all(&[(num_ref & 0xFF) as u8])?;
             // (N+1) retain bits packed LSB-first into ceil((N+1)/8) bytes.
             let n_bits = (num_ref + 1) as usize;
-            let n_bytes = (n_bits + 7) / 8;
+            let n_bytes = n_bits.div_ceil(8);
             let mut packed = vec![0u8; n_bytes];
             for (i, r) in self.retain_bits.iter().take(n_bits).enumerate() {
                 if *r {

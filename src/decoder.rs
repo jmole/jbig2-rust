@@ -1094,7 +1094,7 @@ mod tests {
             colour_extension: false,
         };
         let gr_hdr = GenericRegionHeader {
-            region: region_info.clone(),
+            region: region_info,
             mmr: false,
             template: 0,
             tpgdon: false,

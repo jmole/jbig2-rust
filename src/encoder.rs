@@ -1145,7 +1145,7 @@ mod tests {
             for col in 0..10 {
                 let shape = &shapes[col % 3];
                 let x0 = 5 + (col as i32) * 18;
-                let y0 = 5 + (row as i32) * 18;
+                let y0 = 5 + row * 18;
                 for &(dx, dy) in shape.iter() {
                     bm.set_pixel(x0 + dx, y0 + dy, 1);
                 }
@@ -1189,8 +1189,8 @@ mod tests {
         for row in 0..2 {
             for col in 0..10 {
                 let shape = if col % 2 == 0 { glyph_a } else { glyph_b };
-                let x0 = 5 + (col as i32) * 18;
-                let y0 = 5 + (row as i32) * 18;
+                let x0 = 5 + col * 18;
+                let y0 = 5 + row * 18;
                 for &(dx, dy) in shape.iter() {
                     bm.set_pixel(x0 + dx, y0 + dy, 1);
                 }

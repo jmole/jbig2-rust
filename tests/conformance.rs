@@ -297,7 +297,7 @@ fn arithmetic_generic_round_trip_page_scale() {
     .unwrap();
 
     let compressed_size = out.len();
-    let uncompressed_size = (width as usize + 7) / 8 * height as usize;
+    let uncompressed_size = (width as usize).div_ceil(8) * height as usize;
     eprintln!(
         "page {}x{}: encoded={} bytes, raw={} bytes, ratio={:.2}",
         width,

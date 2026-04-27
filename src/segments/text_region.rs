@@ -1306,7 +1306,7 @@ mod tests {
         // Refined instance (other with flip) at (10, 0): all set except the
         // flipped one which started at value 1.
         assert_eq!(bm.get_pixel(10 + 2, 3), 0);
-        assert_eq!(bm.get_pixel(10 + 0, 0), 1);
+        assert_eq!(bm.get_pixel(10, 0), 1);
     }
 
     #[test]

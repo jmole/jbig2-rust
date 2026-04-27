@@ -173,7 +173,7 @@ fn parse_pbm_p4(data: &[u8]) -> Bitmap {
     assert!(cursor < data.len(), "pbm truncated before raster");
     cursor += 1;
 
-    let stride = ((width + 7) / 8) as usize;
+    let stride = width.div_ceil(8) as usize;
     let needed = stride * height as usize;
     assert!(
         data.len().saturating_sub(cursor) >= needed,

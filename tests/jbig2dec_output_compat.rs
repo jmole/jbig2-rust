@@ -362,7 +362,7 @@ fn parse_pbm_p4(data: &[u8]) -> Result<Bitmap, String> {
     // required whitespace separator belongs to the header.
     cursor += 1;
 
-    let stride = ((width + 7) / 8) as usize;
+    let stride = width.div_ceil(8) as usize;
     let raster_len = stride * height as usize;
     if data.len() < cursor + raster_len {
         return Err(format!("raster shorter than declared {width}x{height}"));

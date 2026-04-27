@@ -189,7 +189,7 @@ fn trace_tt2() {
                 println!("  BMSIZE={}, after-align pos={}", bmsize, r.byte_pos());
                 if bmsize == 0 {
                     let total_width = widths.iter().sum::<i32>() as usize;
-                    let bytes_per_row = (total_width + 7) / 8;
+                    let bytes_per_row = total_width.div_ceil(8);
                     r.skip_bytes(bytes_per_row * hc_h as usize);
                 } else {
                     let pos = r.byte_pos();

@@ -710,14 +710,14 @@ mod tests {
     };
 
     fn packed_from_bools(line: &[bool]) -> Vec<u8> {
-        bools_to_row(line, (line.len() + 7) / 8)
+        bools_to_row(line, line.len().div_ceil(8))
     }
 
     /// Decode the same stream with both the slow and fast paths and assert
     /// they produce identical packed rows.
     fn cross_check_lines(lines: &[Vec<bool>]) {
         let width = lines[0].len();
-        let stride = (width + 7) / 8;
+        let stride = width.div_ceil(8);
         let mut w = BitWriter::new();
         let mut prev = vec![false; width];
         for line in lines {

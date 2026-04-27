@@ -125,7 +125,7 @@ fn save_bmp_1bpp(path: &Path, bitmap: &Bitmap) -> Result<(), String> {
     let width = bitmap.width();
     let height = bitmap.height();
     let src_stride = bitmap.stride();
-    let row_bytes = (((width + 31) / 32) * 4) as usize;
+    let row_bytes = (width.div_ceil(32) * 4) as usize;
     let pixel_offset = 14 + 40 + 8;
     let image_size = row_bytes * height as usize;
     let file_size = pixel_offset + image_size;

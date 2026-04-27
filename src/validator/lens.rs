@@ -3,9 +3,10 @@
 use crate::validator::{CheckId, Severity};
 
 /// Validator lens.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Lens {
     /// Strict ITU-T T.88.
+    #[default]
     StrictT88,
     /// Re-weight for Artifex `jbig2dec` interop.
     Jbig2decInterop,
@@ -13,12 +14,6 @@ pub enum Lens {
     ItuT88Interop,
     /// Re-weight for `jbig2-imageio` interop.
     ImageioInterop,
-}
-
-impl Default for Lens {
-    fn default() -> Self {
-        Self::StrictT88
-    }
 }
 
 /// Per-check decision produced by a lens.
