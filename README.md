@@ -45,13 +45,13 @@ where the decoder accepts both arithmetic and Huffman variants.
 
 ### Not currently supported
 
-#### Huffman-coded JBIG2 outputs
+#### ❌ Huffman-coded JBIG2 outputs
 
 JBIG2 supports huffman encoding for the symbol dictionary, but this results in
 larger file sizes. If you need it, we can add it, but it was not a priority for
 this initial revision.
 
-#### Colour palette (AMD3) encoder
+#### ❌ Colour palette (AMD3) encoder
 
 AMD3 is a narrow color extension to text regions: a small palette plus
 per-symbol-instance color indices. The decoder consumes AMD3 color text
