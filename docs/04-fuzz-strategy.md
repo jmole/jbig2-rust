@@ -205,30 +205,6 @@ Things this doc deliberately leaves on the table.
   triage workflow needs to recognize that and link the new fixture
   to the upstream entry rather than creating a parallel record.
 
-## Local harness
-
-A minimal `cargo-fuzz` (libFuzzer) target lives at
-[`fuzz/fuzz_targets/decode.rs`](../fuzz/fuzz_targets/decode.rs). It drives
-[`Jbig2Decoder`](../src/decoder.rs) on raw input bytes and is intended for
-local exploration; CI wiring is intentionally out of scope here per the
-ordering rule above.
-
-To seed and run the harness locally:
-
-```bash
-cargo install cargo-fuzz
-mkdir -p fuzz/corpus/decode
-find tests/validator-corpus/bugzilla/harvested -name 'stream.jb2' \
-  -exec cp -n {} fuzz/corpus/decode/ \;
-find benchmark-corpus -name '*.jb2' \
-  -exec cp -n {} fuzz/corpus/decode/ \; 2>/dev/null || true
-cargo +nightly fuzz run decode -- -timeout=10 -rss_limit_mb=512
-```
-
-Crashes land in `fuzz/artifacts/decode/`. They are evidence, not regression
-fixtures: triage them per the rule in this document before turning anything
-into a corpus entry.
-
 ## Pointers
 
 - The deterministic regression layer this layers on top of:

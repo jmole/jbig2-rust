@@ -5,7 +5,6 @@ exclude = [
     "vendor/jbig2enc",
     "vendor/jbig2-imageio",
     "vendor/T-REC-T.88-201808",
-    "fuzz",
 ]
 resolver = "2"
 

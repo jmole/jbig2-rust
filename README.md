@@ -113,7 +113,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - `docs/sandbox.md`: external-binary sandbox contract.
 - `docs/01-corpus-drift-guards.md`: corpus drift protection.
 - `docs/03-corpus-ci-goals.md`: corpus CI tiers.
-- `docs/04-fuzz-strategy.md`: fuzzing strategy and local harness command.
+- `docs/04-fuzz-strategy.md`: fuzzing strategy.
 - `docs/05-external-decoder-taxonomy.md`: external decoder taxonomy.
 - `docs/known-conformance-issues.md`: known conformance gaps.
 - `docs/validator-reference.md`: structural validator reference.

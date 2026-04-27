@@ -53,7 +53,6 @@ to land a fix or documented workaround within 90 days.
   supports it.
 - The test suite includes deterministic conformance, corpus, and differential
   checks against external JBIG2 implementations.
-- A `cargo-fuzz` decode target exists for local hostile-input exploration.
 
 ## Non-Goals
 
