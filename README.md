@@ -28,37 +28,30 @@ to crates.io (`publish = false`).
 | Generic region extended 12-AT template (AMD2) | ✅ | ✅ |
 | Generic region MMR (T.6) | ✅ | ✅ |
 | Symbol dictionary arithmetic (7.4.2) | ✅ | ✅ |
-| Symbol dictionary Huffman | ✅ | [unsupported](#symbol-dictionary-huffman-encoder) |
+| Symbol dictionary Huffman | ✅ | [unsupported](#not-currently-supported) |
 | Text region arithmetic, no refinement (7.4.3) | ✅ | ✅ |
 | Text region Huffman and refinement | ✅ | ✅ |
 | Connected-component extraction and identity classifier | n/a | ✅ |
 | Lossy classifier (WXOR, size-bucket acceleration) | n/a | ✅ |
 | Generic refinement (6.3, 7.4.7) | ✅ | ✅ |
 | Pattern dictionary and halftone (7.4.4, 7.4.5) | ✅ | ✅ |
-| Colour palette (AMD3) | ✅ | [unsupported](#colour-palette-amd3-encoder) |
+| Colour palette (AMD3) | ✅ | [unsupported](#not-currently-supported) |
 
 The decoder side covers the T.88 TT1..TT9 conformance streams exercised by the
 repository tests. Encoding still prefers the arithmetic paths for some features
 where the decoder accepts both arithmetic and Huffman variants.
 
-### Symbol dictionary Huffman encoder
 
-T.88 lets a symbol dictionary be coded with either MQ arithmetic or Huffman
-tables. The decoder accepts both (TT1..TT3 force the Huffman path), but an
-encoder only needs to pick one to produce a spec-correct stream. We emit the
-arithmetic variant via `Mode::SymbolLossless` because:
 
-- Arithmetic coding compresses better. Huffman SD coding exists in the
-  standard mainly for low-power fax hardware that can't afford arithmetic
-  coding, which doesn't apply here.
-- The decoder side already covers Huffman SD streams produced by other
-  encoders, so there is no interop gap to close.
-- A Huffman SD encoder would also need to grow user-defined Huffman table
-  emission and the Huffman + refinement/aggregation sub-modes (see
-  `src/segments/symbol_dictionary.rs`) for a path that is strictly worse than
-  what we already produce.
+### Not currently supported
 
-### Colour palette (AMD3) encoder
+#### Huffman-coded JBIG2 outputs
+
+JBIG2 supports huffman encoding for the symbol dictionary, but this results in
+larger file sizes. If you need it, we can add it, but it was not a priority for
+this initial revision.
+
+#### Colour palette (AMD3) encoder
 
 AMD3 is a narrow color extension to text regions: a small palette plus
 per-symbol-instance color indices. The decoder consumes AMD3 color text
