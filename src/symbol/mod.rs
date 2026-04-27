@@ -5,6 +5,7 @@
 //!
 //! * Extracts 4/8-connected components from a page bitmap ([`cc`]).
 //! * Builds an identity-matching lossless dictionary ([`identity`]).
+#![forbid(unsafe_code)]
 
 pub mod cc;
 pub mod classify;

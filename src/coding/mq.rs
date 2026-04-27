@@ -17,8 +17,7 @@
 //! Following the spec, bits are emitted MSB-first. `encode(0)` codes the MPS
 //! for that context, `encode(1)` the LPS; the CX's MPS bit lives in the high
 //! bit of [`CxState::index`] so swapping between the two is a single XOR.
-
-use core::ptr;
+#![forbid(unsafe_code)]
 
 use crate::error::{Jbig2Error, Jbig2Result};
 
@@ -51,6 +50,37 @@ impl CxState {
     #[inline]
     pub fn mps_bit(self) -> u8 {
         self.0 & 0x80
+    }
+}
+
+/// Validated MQ context index.
+///
+/// This keeps the public hot-path API explicit about the context-index
+/// invariant without requiring unsafe indexing inside the arithmetic coder.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ContextIndex(usize);
+
+impl ContextIndex {
+    /// Create a context index inside the fixed JBIG2 MQ context space.
+    #[inline]
+    pub fn new(cx: usize) -> Self {
+        assert!(
+            cx < MQ_NUM_CONTEXTS,
+            "MQ context index {cx} exceeds fixed context space {MQ_NUM_CONTEXTS}"
+        );
+        Self(cx)
+    }
+
+    #[inline]
+    fn as_usize(self) -> usize {
+        self.0
+    }
+}
+
+impl From<usize> for ContextIndex {
+    #[inline]
+    fn from(cx: usize) -> Self {
+        Self::new(cx)
     }
 }
 
@@ -161,18 +191,6 @@ impl MqContexts {
     pub fn get_mut(&mut self, cx: usize) -> &mut CxState {
         &mut self.states[cx]
     }
-
-    /// Borrow one context without a bounds check in release builds.
-    ///
-    /// # Safety
-    ///
-    /// The caller must guarantee that `cx < self.len()`.
-    #[inline]
-    pub(crate) unsafe fn get_unchecked_mut(&mut self, cx: usize) -> &mut CxState {
-        debug_assert!(cx < self.states.len());
-        // SAFETY: upheld by the caller; see contract above.
-        unsafe { self.states.get_unchecked_mut(cx) }
-    }
 }
 
 /// MQ arithmetic encoder.
@@ -186,7 +204,6 @@ pub struct MqEncoder {
     b: u8,
     first: bool,
     out: Vec<u8>,
-    write_pos: usize,
 }
 
 impl MqEncoder {
@@ -201,7 +218,6 @@ impl MqEncoder {
             b: 0,
             first: true,
             out: Vec::with_capacity(capacity_hint),
-            write_pos: 0,
         }
     }
 
@@ -217,7 +233,6 @@ impl MqEncoder {
             self.out.reserve(capacity_hint - self.out.capacity());
         }
         self.out.clear();
-        self.write_pos = 0;
     }
 
     /// Swap in an externally-retained output buffer before starting a new
@@ -226,22 +241,17 @@ impl MqEncoder {
     pub fn take_output_buffer(&mut self, buf: &mut Vec<u8>) {
         buf.clear();
         core::mem::swap(&mut self.out, buf);
-        self.write_pos = self.out.len();
     }
 
     /// Encode one binary decision in context `cx`.
     #[inline]
-    pub fn encode(&mut self, cxs: &mut MqContexts, cx: usize, d: u8) {
-        // SAFETY: Segment encoders validate the context range before entering
-        // their per-bit MQ loops, so repeated bounds checks are redundant here.
-        let state = unsafe { cxs.get_unchecked_mut(cx) };
+    pub fn encode<C: Into<ContextIndex>>(&mut self, cxs: &mut MqContexts, cx: C, d: u8) {
+        let state = cxs.get_mut(cx.into().as_usize());
         let index = state.index() as usize;
         let mps_bit = state.mps_bit();
         let lps_bit = mps_bit ^ 0x80;
         debug_assert!(index < QE_TABLE.len());
-        // SAFETY: `CxState::index()` is a 7-bit QE-table index. All states come
-        // from `QE_TABLE` transitions, which stay in-range for all 47 entries.
-        let entry = unsafe { *QE_TABLE.get_unchecked(index) };
+        let entry = QE_TABLE[index];
         let qe = entry.qe as u32;
         let lps_state = if entry.switch {
             CxState(entry.nlps | lps_bit)
@@ -295,23 +305,7 @@ impl MqEncoder {
 
     #[inline]
     fn push_byte(&mut self, byte: u8) {
-        if self.write_pos == self.out.capacity() {
-            self.grow_out();
-        }
-
-        // SAFETY: `grow_out` ensures spare capacity for `write_pos`, and we
-        // immediately extend the logical length to cover the initialized byte.
-        unsafe {
-            ptr::write(self.out.as_mut_ptr().add(self.write_pos), byte);
-            self.write_pos += 1;
-            self.out.set_len(self.write_pos);
-        }
-    }
-
-    #[cold]
-    fn grow_out(&mut self) {
-        let additional = self.out.capacity().max(64);
-        self.out.reserve(additional);
+        self.out.push(byte);
     }
 
     #[cold]
@@ -373,7 +367,6 @@ impl MqEncoder {
         // `0xFF00` tail for the remaining bit pump, so preserving the
         // exact byte count from the reference encoder is important for
         // conformance streams to land in the same MQ state at decode time.
-        self.out.truncate(self.write_pos);
     }
 
     /// Flush the encoder and return the encoded byte vector. The trailing
@@ -390,12 +383,11 @@ impl MqEncoder {
         self.flush();
         dst.clear();
         core::mem::swap(dst, &mut self.out);
-        self.write_pos = 0;
     }
 
     /// Bytes emitted so far (not counting the buffered `b`).
     pub fn bytes_written(&self) -> usize {
-        self.write_pos
+        self.out.len()
     }
 }
 
@@ -509,17 +501,13 @@ impl<'a> MqDecoder<'a> {
 
     /// Decode one binary decision in context `cx`.
     #[inline]
-    pub fn decode(&mut self, cxs: &mut MqContexts, cx: usize) -> u8 {
-        // SAFETY: Segment decoders validate the context range before entering
-        // their per-bit MQ loops, so repeated bounds checks are redundant here.
-        let state = unsafe { cxs.get_unchecked_mut(cx) };
+    pub fn decode<C: Into<ContextIndex>>(&mut self, cxs: &mut MqContexts, cx: C) -> u8 {
+        let state = cxs.get_mut(cx.into().as_usize());
         let index = state.index() as usize;
         let mps_bit = state.mps_bit();
         let lps_bit = mps_bit ^ 0x80;
         debug_assert!(index < QE_TABLE.len());
-        // SAFETY: `CxState::index()` is a 7-bit QE-table index. All states come
-        // from `QE_TABLE` transitions, which stay in-range for all 47 entries.
-        let entry = unsafe { *QE_TABLE.get_unchecked(index) };
+        let entry = QE_TABLE[index];
         let qe = entry.qe as u32;
         let lps_state = if entry.switch {
             CxState(entry.nlps | lps_bit)

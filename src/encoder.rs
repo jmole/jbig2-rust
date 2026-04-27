@@ -5,6 +5,7 @@
 //! + text region, or a pattern dictionary + halftone region.
 //!
 //! See [`EncoderConfig`] for the tunables surfaced to callers.
+#![forbid(unsafe_code)]
 
 use std::io::Write;
 

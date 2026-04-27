@@ -9,6 +9,7 @@
 //! exposes a single image, so we return page 1 (the first page). Applications
 //! that need random access to later pages should use [`crate::Jbig2Decoder`]
 //! directly and call [`Jbig2Decoder::decode_page`] with a 1-based page index.
+#![forbid(unsafe_code)]
 
 use std::io::{Cursor, Read, Seek};
 use std::sync::Once;

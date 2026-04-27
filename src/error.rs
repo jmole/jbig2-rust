@@ -1,4 +1,5 @@
 //! Error types for the `jbig2` crate.
+#![forbid(unsafe_code)]
 
 use std::io;
 

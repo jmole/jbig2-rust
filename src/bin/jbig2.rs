@@ -5,6 +5,7 @@
 //! * `jbig2 decode INPUT.jb2 OUTPUT.png`
 //! * `jbig2 info   INPUT.jb2`
 //! * `jbig2 encode INPUT.png OUTPUT.jb2 [--preset fast|balanced|max]`
+#![forbid(unsafe_code)]
 
 use std::fs::File;
 use std::io::{BufReader, BufWriter};

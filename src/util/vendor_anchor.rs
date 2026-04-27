@@ -4,6 +4,7 @@
 //! This module intentionally handles only anchor concerns (`vendor` fields):
 //! conformance-matrix-specific row/column validation remains in
 //! `tools/conformance/main.rs`.
+#![forbid(unsafe_code)]
 
 use std::collections::BTreeMap;
 use std::fmt;
