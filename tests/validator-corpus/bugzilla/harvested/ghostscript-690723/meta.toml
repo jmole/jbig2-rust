@@ -1,0 +1,15 @@
+bug_id = 690723
+url = "https://bugs.ghostscript.com/show_bug.cgi?id=690723"
+title = "Using unallocated memory when parsing image..."
+status = "RESOLVED FIXED"
+severity = "minor"
+attachment_id = 5317
+attachment_filename = "globals.jbig2"
+attachment_mime = "application/octet-stream"
+sha256 = "222df4a9f71a6beed42bdc19e63f091023f691f2ca19e5bd801bf47d6e6d8ad6"
+size = 95
+clause_guess = "7.3.1"
+stream_status = "harvested"
+embedded = true
+notes = "Segment header sequencing: globals stream consumed before referenced page produces use-of-unallocated memory; treated as embedded fragment."
+attachment_format = "embedded-fragment"

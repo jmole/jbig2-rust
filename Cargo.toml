@@ -21,11 +21,20 @@ keywords = ["jbig2", "t88", "bilevel", "compression", "image"]
 publish = false
 
 [features]
-default = ["image", "mmr"]
+default = ["image", "mmr", "sandbox-runtime"]
 image = ["dep:image"]
 rayon = ["dep:rayon"]
 mmr = []
 cli = ["dep:clap", "dep:anyhow", "dep:image"]
+validator-cli = ["dep:anyhow", "dep:clap", "dep:serde", "dep:serde_json"]
+validator-corpus = ["dep:anyhow", "dep:clap", "dep:serde", "dep:serde_json", "dep:sha2", "dep:toml", "dep:ron", "sandbox-runtime"]
+c-decoders-asan = []
+conformance-tools = ["dep:ron", "dep:serde", "sandbox-runtime"]
+# Sandboxed external-process runner used by the conformance matrix, the
+# corpus runner, and the integration-test oracle helpers. Pulls in `libc`
+# for `setrlimit`/`kill`. Compile-once usable from both `tools/` and
+# `tests/` since the module lives at `jbig2::util::sandbox`.
+sandbox-runtime = ["dep:libc"]
 
 [dependencies]
 thiserror = "1"
@@ -33,26 +42,64 @@ image = { version = "0.25", default-features = false, features = ["png", "tiff",
 rayon = { version = "1", optional = true }
 clap = { version = "4", features = ["derive"], optional = true }
 anyhow = { version = "1", optional = true }
+ron = { version = "0.12.1", optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+sha2 = { version = "0.10", optional = true }
+libc = { version = "0.2", optional = true }
+toml = { version = "0.8", optional = true }
 
 [dev-dependencies]
 proptest = "1"
 rand = "0.8"
 rand_xoshiro = "0.6"
-criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support", "html_reports", "plotters"] }
-plotters = { version = "0.3", default-features = false, features = ["svg_backend"] }
+shlex = "1"
+serde = { version = "1", features = ["derive"] }
 
 [[bin]]
 name = "jbig2"
 path = "src/bin/jbig2.rs"
 required-features = ["cli"]
 
-[[bench]]
-name = "codec"
-harness = false
+[[bin]]
+name = "corpus-encode"
+path = "tools/corpus/corpus_encode.rs"
+required-features = ["image"]
 
-[[bench]]
-name = "reference_codec"
-harness = false
+[[bin]]
+name = "conformance-matrix"
+path = "tools/conformance/main.rs"
+required-features = ["image", "conformance-tools"]
+
+[[bin]]
+name = "annex-h-oracle"
+path = "tools/conformance/annex_h_oracle.rs"
+required-features = ["image"]
+
+[[bin]]
+name = "jbig2-validate"
+path = "tools/validator/main.rs"
+required-features = ["validator-cli"]
+
+[[bin]]
+name = "corpus-mint"
+path = "tools/corpus-mint/main.rs"
+required-features = ["validator-corpus"]
+
+[[bin]]
+name = "corpus-validator"
+path = "tools/corpus-validator/main.rs"
+required-features = ["validator-corpus"]
+
+# Sandboxable child binary: invoked by `tools/corpus-validator` (and the
+# eventual fuzz harness) inside `Sandbox::for_decoder()` so that decoder
+# behaviour on hostile input is observed under the same isolation we apply
+# to jbig2dec and the ITU sample decoder. Stable exit codes (0 = ok,
+# 1 = decode error, 2 = bad args) plus a panic-to-SIGABRT hook are part of
+# the contract.
+[[bin]]
+name = "jbig2-decode"
+path = "tools/jbig2-decode/main.rs"
 
 [profile.release]
 opt-level = 3

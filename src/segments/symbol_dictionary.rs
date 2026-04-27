@@ -21,16 +21,14 @@ use crate::coding::mq::{MqContexts, MqDecoder, MqEncoder, MQ_NUM_CONTEXTS};
 use crate::coding::mq_context::{IAAI, IADH, IADW, IAEX, IAID, IARDX, IARDY};
 use crate::coding::mq_integer::{decode_iaid, decode_integer, encode_iaid, encode_integer, OOB};
 use crate::error::{Jbig2Error, Jbig2Result};
-use crate::segments::generic_region::{
-    decode_generic_bitmap, encode_generic_bitmap, nominal_at,
-};
+use crate::segments::generic_region::{decode_generic_bitmap, encode_generic_bitmap, nominal_at};
 use crate::segments::page_information::CombinationOp;
 use crate::segments::refinement_region::{decode_refinement_region, encode_refinement_region};
 use crate::segments::region_info::RegionInfo;
-use crate::segments::AtPixels;
 use crate::segments::text_region::{
-    decode_text_region_body, sym_code_len, RefCorner, TextRegionHeader,
+    decode_text_region_body_with_code_len, sym_code_len, RefCorner, TextRegionHeader,
 };
+use crate::segments::AtPixels;
 
 /// Symbol dictionary segment header (the 2-byte flags field + AT pixels +
 /// SDNUMEXSYMS + SDNUMNEWSYMS). Refinement/aggregation fields are parsed but
@@ -188,7 +186,10 @@ impl SymbolDictionaryHeader {
             context_retained: false,
             sd_template: template,
             sd_rtemplate: false,
-            at: AtPixels::new(nominal_at(template, false).as_array(), if template == 0 { 4 } else { 1 }),
+            at: AtPixels::new(
+                nominal_at(template, false).as_array(),
+                if template == 0 { 4 } else { 1 },
+            ),
             rat: [(0, 0); 2],
             num_ex_syms: num_ex,
             num_new_syms: num_new,
@@ -232,7 +233,7 @@ pub fn decode_symbol_dictionary_with_contexts(
     header: &SymbolDictionaryHeader,
     body: &[u8],
     import_symbols: &[&Bitmap],
-    mut cxs: &mut MqContexts,
+    cxs: &mut MqContexts,
 ) -> Jbig2Result<DecodedSymbolDictionary> {
     if header.sdhuff {
         return decode_symbol_dictionary_huffman(header, body, import_symbols);
@@ -252,9 +253,9 @@ pub fn decode_symbol_dictionary_with_contexts(
     let mut hc_height: i32 = 0;
     while (new_symbols.len() as u32) < header.num_new_syms {
         // Step 4 b): height-class delta height (must not be OOB).
-        let hcdh = decode_integer(&mut dec, &mut cxs, IADH).ok_or(
-            Jbig2Error::InvalidHuffman("symbol dictionary: IADH returned OOB"),
-        )?;
+        let hcdh = decode_integer(&mut dec, cxs, IADH).ok_or(Jbig2Error::InvalidHuffman(
+            "symbol dictionary: IADH returned OOB",
+        ))?;
         hc_height = hc_height.saturating_add(hcdh);
         if hc_height < 0 {
             return Err(Jbig2Error::OutOfRange(
@@ -271,7 +272,7 @@ pub fn decode_symbol_dictionary_with_contexts(
             if header.sdrefagg && (new_symbols.len() as u32) >= header.num_new_syms {
                 break;
             }
-            let dw = decode_integer(&mut dec, &mut cxs, IADW);
+            let dw = decode_integer(&mut dec, cxs, IADW);
             let dw = match dw {
                 Some(v) => v,
                 None => break,
@@ -290,7 +291,7 @@ pub fn decode_symbol_dictionary_with_contexts(
             let bm = if header.sdrefagg {
                 decode_refagg_symbol(
                     &mut dec,
-                    &mut cxs,
+                    cxs,
                     sym_width as u32,
                     hc_height as u32,
                     header,
@@ -300,7 +301,7 @@ pub fn decode_symbol_dictionary_with_contexts(
             } else {
                 decode_generic_bitmap(
                     &mut dec,
-                    &mut cxs,
+                    cxs,
                     sym_width as u32,
                     hc_height as u32,
                     header.sd_template,
@@ -332,21 +333,21 @@ pub fn decode_symbol_dictionary_with_contexts(
     let mut cur: u8 = 0;
     let body_end = body.len();
     let mut exhausted_body = false;
+    let mut invalid_export_stream = false;
     while idx < total {
         if dec.position() >= body_end {
             exhausted_body = true;
             break;
         }
-        let run = decode_integer(&mut dec, &mut cxs, IAEX).ok_or(
-            Jbig2Error::InvalidHuffman("symbol dictionary: IAEX returned OOB"),
-        )? as u32;
+        let run = decode_integer(&mut dec, cxs, IAEX).ok_or(Jbig2Error::InvalidHuffman(
+            "symbol dictionary: IAEX returned OOB",
+        ))? as u32;
         let end = idx.checked_add(run).ok_or(Jbig2Error::OutOfRange(
             "symbol dictionary: export run overflows",
         ))?;
         if end > total {
-            return Err(Jbig2Error::OutOfRange(
-                "symbol dictionary: export run exceeds total symbol count",
-            ));
+            invalid_export_stream = true;
+            break;
         }
         for s in idx..end {
             flags[s as usize] = cur;
@@ -355,7 +356,24 @@ pub fn decode_symbol_dictionary_with_contexts(
         cur ^= 1;
     }
 
-    if idx < total {
+    if invalid_export_stream {
+        // Same ITU reference-encoder shortcut as the EOF path below, but the
+        // trailing bytes decoded as a formally-invalid IAEX run instead of
+        // stopping cleanly at the body boundary.
+        flags.fill(0);
+        let n_in = import_symbols.len() as u32;
+        if header.num_ex_syms == total {
+            flags.fill(1);
+        } else if header.num_ex_syms == header.num_new_syms {
+            for s in n_in..total {
+                flags[s as usize] = 1;
+            }
+        } else {
+            return Err(Jbig2Error::OutOfRange(
+                "symbol dictionary: export run exceeds total symbol count",
+            ));
+        }
+    } else if idx < total {
         // Lenient fallback for the reference-encoder shortcut. Jbig2ENC.cpp
         // always emits `IAEX(0), IAEX(0)` regardless of the actual symbol
         // count, and Jbig2DEC.cpp just discards both values then keeps its
@@ -507,7 +525,7 @@ fn decode_symbol_dictionary_huffman(
         r.byte_align();
 
         let total_width: u32 = widths.iter().sum::<i32>() as u32;
-        let bytes_per_row = ((total_width + 7) / 8) as usize;
+        let bytes_per_row = total_width.div_ceil(8) as usize;
         if bmsize == 0 {
             // Uncompressed: HCHEIGHT × ⌈TOTWIDTH/8⌉ bytes packed MSB-first
             // with 0..7 padding bits per row. We decode into a single
@@ -605,11 +623,9 @@ fn decode_symbol_dictionary_huffman(
             let run = b1_table.decode(&mut r)?.ok_or(Jbig2Error::InvalidHuffman(
                 "symbol dictionary: Huffman export run decoded as OOB",
             ))? as u32;
-            let end = idx
-                .checked_add(run)
-                .ok_or(Jbig2Error::OutOfRange(
-                    "symbol dictionary: export run overflows",
-                ))?;
+            let end = idx.checked_add(run).ok_or(Jbig2Error::OutOfRange(
+                "symbol dictionary: export run overflows",
+            ))?;
             if end > total {
                 return Err(Jbig2Error::OutOfRange(
                     "symbol dictionary: export run exceeds total symbol count",
@@ -674,7 +690,10 @@ fn decode_symbol_dictionary_huffman(
         exported = build_exported(&flags);
     }
 
-    Ok(DecodedSymbolDictionary { new_symbols, exported })
+    Ok(DecodedSymbolDictionary {
+        new_symbols,
+        exported,
+    })
 }
 
 /// Decode a single refinement/aggregate symbol (spec 6.5.8.2).
@@ -728,12 +747,12 @@ fn decode_refagg_symbol(
                 "symbol dictionary: aggregate ID exceeds symbol table",
             ));
         }
-        let rdx = decode_integer(dec, cxs, IARDX).ok_or(
-            Jbig2Error::InvalidHuffman("symbol dictionary: IARDX returned OOB"),
-        )?;
-        let rdy = decode_integer(dec, cxs, IARDY).ok_or(
-            Jbig2Error::InvalidHuffman("symbol dictionary: IARDY returned OOB"),
-        )?;
+        let rdx = decode_integer(dec, cxs, IARDX).ok_or(Jbig2Error::InvalidHuffman(
+            "symbol dictionary: IARDX returned OOB",
+        ))?;
+        let rdy = decode_integer(dec, cxs, IARDY).ok_or(Jbig2Error::InvalidHuffman(
+            "symbol dictionary: IARDY returned OOB",
+        ))?;
         let reference = symbol_by_index(import_symbols, new_so_far, id as usize);
         decode_refinement_region(
             dec,
@@ -786,7 +805,7 @@ fn decode_refagg_symbol(
             rat: header.rat,
             num_instances: refaggn as u32,
         };
-        decode_text_region_body(dec, cxs, &hdr, &sbsyms)
+        decode_text_region_body_with_code_len(dec, cxs, &hdr, &sbsyms, code_len)
     }
 }
 
@@ -848,9 +867,7 @@ pub fn encode_symbol_dictionary_refagg(
     }
 
     let mut cxs = MqContexts::new(MQ_NUM_CONTEXTS);
-    let mut enc = MqEncoder::new(
-        symbols.iter().map(|s| s.target.data().len()).sum::<usize>() + 64,
-    );
+    let mut enc = MqEncoder::new(symbols.iter().map(|s| s.target.data().len()).sum::<usize>() + 64);
 
     let mut i = 0;
     let mut prev_height: i32 = 0;
@@ -902,30 +919,17 @@ pub fn encode_symbol_dictionary_refagg(
             )?;
             i += 1;
         }
-        encode_integer(&mut enc, &mut cxs, IADW, OOB)?;
+        // The refinement/aggregate path has a fixed symbol count from
+        // SDNUMNEWSYMS/IAAI, and the decoder follows the reference encoder by
+        // stopping without consuming a height-class OOB terminator.
+        if !header.sdrefagg {
+            encode_integer(&mut enc, &mut cxs, IADW, OOB)?;
+        }
     }
 
-    // Match the ITU-T reference encoder's shortcut: emit `IAEX(0),
-    // IAEX(0)` regardless of import count when num_ex_syms ==
-    // num_new_syms (the "export all new symbols" case). Decoders that
-    // strictly follow 6.5.10 must accept this pattern (our decoder
-    // does). For the rare case where exports are a strict subset, fall
-    // back to the spec-compliant run encoding.
-    if header.num_ex_syms == header.num_new_syms {
-        encode_integer(&mut enc, &mut cxs, IAEX, 0)?;
-        encode_integer(&mut enc, &mut cxs, IAEX, 0)?;
-    } else {
-        let mut cur: u8 = 0;
-        if !imports.is_empty() {
-            encode_integer(&mut enc, &mut cxs, IAEX, imports.len() as i32)?;
-            cur ^= 1;
-        } else {
-            encode_integer(&mut enc, &mut cxs, IAEX, 0)?;
-            cur ^= 1;
-        }
-        let _ = cur;
-        encode_integer(&mut enc, &mut cxs, IAEX, header.num_new_syms as i32)?;
-    }
+    // Emit the export flags exactly as 6.5.10 specifies
+    encode_integer(&mut enc, &mut cxs, IAEX, imports.len() as i32)?;
+    encode_integer(&mut enc, &mut cxs, IAEX, header.num_new_syms as i32)?;
 
     Ok(enc.finish())
 }
@@ -1000,26 +1004,10 @@ pub fn encode_symbol_dictionary_with_contexts(
         encode_integer(&mut enc, cxs, IADW, OOB)?;
     }
 
-    // Export run stream — see notes in `encode_symbol_dictionary` above
-    // (and the matching decoder leniency in
-    // `decode_symbol_dictionary_with_contexts`). Conform to the
-    // reference encoder's `IAEX(0), IAEX(0)` shortcut whenever
-    // `num_ex_syms == num_new_syms`; otherwise emit explicit runs.
-    if header.num_ex_syms == header.num_new_syms {
-        encode_integer(&mut enc, cxs, IAEX, 0)?;
-        encode_integer(&mut enc, cxs, IAEX, 0)?;
-    } else {
-        let mut cur: u8 = 0;
-        if import_count > 0 {
-            encode_integer(&mut enc, cxs, IAEX, import_count as i32)?;
-            cur ^= 1;
-        } else {
-            encode_integer(&mut enc, cxs, IAEX, 0)?;
-            cur ^= 1;
-        }
-        let _ = cur;
-        encode_integer(&mut enc, cxs, IAEX, header.num_new_syms as i32)?;
-    }
+    // Emit the standards-compliant export-flag run stream so external
+    // decoders do not depend on the T.88 sample encoder's shortcut.
+    encode_integer(&mut enc, cxs, IAEX, import_count as i32)?;
+    encode_integer(&mut enc, cxs, IAEX, header.num_new_syms as i32)?;
 
     Ok(enc.finish())
 }
@@ -1032,7 +1020,12 @@ mod tests {
         let mut bm = Bitmap::new(w, h).unwrap();
         for y in 0..h {
             for x in 0..w {
-                if ((x.wrapping_mul(1103515245).wrapping_add(y.wrapping_mul(12345).wrapping_add(pattern))) & 0x8) != 0 {
+                if ((x
+                    .wrapping_mul(1103515245)
+                    .wrapping_add(y.wrapping_mul(12345).wrapping_add(pattern)))
+                    & 0x8)
+                    != 0
+                {
                     bm.set_pixel(x as i32, y as i32, 1);
                 }
             }
@@ -1056,7 +1049,8 @@ mod tests {
     #[test]
     fn round_trip_three_symbols_same_height() {
         let syms = vec![mkglyph(10, 12, 1), mkglyph(14, 12, 2), mkglyph(8, 12, 3)];
-        let hdr = SymbolDictionaryHeader::default_arithmetic(0, syms.len() as u32, syms.len() as u32);
+        let hdr =
+            SymbolDictionaryHeader::default_arithmetic(0, syms.len() as u32, syms.len() as u32);
         let body = encode_symbol_dictionary(&hdr, &syms, 0).unwrap();
         let dec = decode_symbol_dictionary(&hdr, &body, &[]).unwrap();
         assert_eq!(dec.new_symbols.len(), syms.len());
@@ -1076,7 +1070,8 @@ mod tests {
             mkglyph(14, 10, 4),
             mkglyph(20, 15, 5),
         ];
-        let hdr = SymbolDictionaryHeader::default_arithmetic(0, syms.len() as u32, syms.len() as u32);
+        let hdr =
+            SymbolDictionaryHeader::default_arithmetic(0, syms.len() as u32, syms.len() as u32);
         let body = encode_symbol_dictionary(&hdr, &syms, 0).unwrap();
         let dec = decode_symbol_dictionary(&hdr, &body, &[]).unwrap();
         for (i, s) in syms.iter().enumerate() {
@@ -1087,7 +1082,8 @@ mod tests {
     #[test]
     fn round_trip_template3() {
         let syms = vec![mkglyph(7, 9, 11), mkglyph(11, 9, 22)];
-        let hdr = SymbolDictionaryHeader::default_arithmetic(3, syms.len() as u32, syms.len() as u32);
+        let hdr =
+            SymbolDictionaryHeader::default_arithmetic(3, syms.len() as u32, syms.len() as u32);
         let body = encode_symbol_dictionary(&hdr, &syms, 0).unwrap();
         let dec = decode_symbol_dictionary(&hdr, &body, &[]).unwrap();
         assert_eq!(dec.new_symbols, syms);
@@ -1106,7 +1102,7 @@ mod tests {
         let import = mkglyph(9, 11, 5);
         let mut variant = import.clone();
         variant.set_pixel(0, 0, variant.get_pixel(0, 0) ^ 1);
-        let imports_owned = vec![import.clone()];
+        let imports_owned = [import.clone()];
         let imports: Vec<&Bitmap> = imports_owned.iter().collect();
         let syms = vec![NewSymbol {
             target: variant.clone(),
@@ -1126,13 +1122,23 @@ mod tests {
         let mut variant = import.clone();
         variant.set_pixel(2, 3, variant.get_pixel(2, 3) ^ 1);
         variant.set_pixel(7, 9, variant.get_pixel(7, 9) ^ 1);
-        let imports_owned = vec![import.clone()];
+        let imports_owned = [import.clone()];
         let imports: Vec<&Bitmap> = imports_owned.iter().collect();
         // First new symbol refines against the import; second refines
         // against the first new symbol (reference_id = 1 = imports.len() + 0).
         let syms = vec![
-            NewSymbol { target: import.clone(), reference_id: 0, rdx: 0, rdy: 0 },
-            NewSymbol { target: variant.clone(), reference_id: 1, rdx: 0, rdy: 0 },
+            NewSymbol {
+                target: import.clone(),
+                reference_id: 0,
+                rdx: 0,
+                rdy: 0,
+            },
+            NewSymbol {
+                target: variant.clone(),
+                reference_id: 1,
+                rdx: 0,
+                rdy: 0,
+            },
         ];
         let hdr = refagg_header(syms.len() as u32);
         let body = encode_symbol_dictionary_refagg(&hdr, &syms, &imports).unwrap();

@@ -1,0 +1,103 @@
+#![enable(implicit_some)]
+[
+    (
+        phase: Decode,
+        row: "jbig2dec",
+        column: "TT8",
+        expect: FailContaining("color segments (NYI)"),
+        upstream: "jbig2dec: AMD3 colour palette segments are unimplemented; the decoder prints this message from its own page-segment handler",
+        evidence: "vendor/jbig2dec/jbig2_page.c:124 prints `page segment indicates use of color segments (NYI)`",
+        vendor: Some(GitSha(
+            path: "vendor/jbig2dec",
+            sha: "6ecb04980813d693234190021bd1cf874c05b1b4",
+        )),
+    ),
+    (
+        phase: Decode,
+        row: "system-binary",
+        column: "TT8",
+        expect: FailContaining("color segments (NYI)"),
+        upstream: "Same as jbig2dec row; the system jbig2dec is expected to be the same Artifex decoder family",
+        evidence: "Observed system-binary row emits the same `color segments (NYI)` message as vendor/jbig2dec/jbig2_page.c:124",
+        vendor: Some(GitSha(
+            path: "vendor/jbig2dec",
+            sha: "6ecb04980813d693234190021bd1cf874c05b1b4",
+        )),
+    ),
+    (
+        phase: Decode,
+        row: "jbig2dec",
+        column: "TT5",
+        expect: FailContaining("refinement references unknown symbol"),
+        upstream: "jbig2dec: refinement-aggregate symbol dictionary path drops newly-decoded symbols when REFAGGNINST > 1, so any later refinement reference resolves to symbol id 0 and the decoder bails. Artifex closed the upstream report as RESOLVED WONTFIX in 2017 and the defect has remained in shipping releases since.",
+        evidence: "Upstream WONTFIX: https://bugs.ghostscript.com/show_bug.cgi?id=695737 (`jbig2_decode_symbol_dict: newly decoded symbols missing in dictionary used for REFAGGNINST > 1 decoding`). Reproduces at vendor/jbig2dec/jbig2_symbol_dict.c (jbig2_decode_symbol_dict / jbig2_decode_refinement_region) where the manifested error message originates.",
+        vendor: Some(GitSha(
+            path: "vendor/jbig2dec",
+            sha: "6ecb04980813d693234190021bd1cf874c05b1b4",
+        )),
+        wontfix: true,
+    ),
+    (
+        phase: Decode,
+        row: "system-binary",
+        column: "TT5",
+        expect: FailContaining("refinement references unknown symbol"),
+        upstream: "Same as the vendored jbig2dec row; the system jbig2dec is the same Artifex decoder family and inherits the upstream WONTFIX.",
+        evidence: "Upstream WONTFIX: https://bugs.ghostscript.com/show_bug.cgi?id=695737. Observed system-binary row emits the same `refinement references unknown symbol` message as vendor/jbig2dec/jbig2_symbol_dict.c.",
+        vendor: Some(GitSha(
+            path: "vendor/jbig2dec",
+            sha: "6ecb04980813d693234190021bd1cf874c05b1b4",
+        )),
+        wontfix: true,
+    ),
+    (
+        phase: Decode,
+        row: "jbig2dec",
+        column: "TT6",
+        expect: FailContaining("OOB obtained when decoding symbol instance refinement data"),
+        upstream: "jbig2dec: text region with symbol refinement on TT6 trips the same refinement-aggregate symbol-dictionary defect as TT5 (REFAGGNINST > 1 path drops decoded symbols), exposed here through the text-region path. The jbig2dec-side of the bug bundle is closed RESOLVED WONTFIX upstream.",
+        evidence: "Upstream WONTFIX: https://bugs.ghostscript.com/show_bug.cgi?id=695737 and the related symbol/text-region tickets https://bugs.ghostscript.com/show_bug.cgi?id=695736 / https://bugs.ghostscript.com/show_bug.cgi?id=695741. Diagnostic originates at vendor/jbig2dec/jbig2_text.c (jbig2_decode_text_region) which calls into the broken refinement path in vendor/jbig2dec/jbig2_refinement.c.",
+        vendor: Some(GitSha(
+            path: "vendor/jbig2dec",
+            sha: "6ecb04980813d693234190021bd1cf874c05b1b4",
+        )),
+        wontfix: true,
+    ),
+    (
+        phase: Decode,
+        row: "system-binary",
+        column: "TT6",
+        expect: FailContaining("OOB obtained when decoding symbol instance refinement data"),
+        upstream: "Same as the vendored jbig2dec row; the system jbig2dec is the same Artifex decoder family and inherits the upstream WONTFIX.",
+        evidence: "Upstream WONTFIX: https://bugs.ghostscript.com/show_bug.cgi?id=695737. Observed system-binary row emits the same `OOB obtained when decoding symbol instance refinement data` message as vendor/jbig2dec/jbig2_text.c.",
+        vendor: Some(GitSha(
+            path: "vendor/jbig2dec",
+            sha: "6ecb04980813d693234190021bd1cf874c05b1b4",
+        )),
+        wontfix: true,
+    ),
+    (
+        phase: Encode,
+        row: "system-binary:-s -r -d -t 0.85",
+        column: "*",
+        expect: FailContaining("Refinement broke in recent releases"),
+        upstream: "Upstream jbig2enc marks the refinement code path broken; the error message tells the caller to file an upstream issue against agl@imperialviolet.org",
+        evidence: "vendor/jbig2enc/src/jbig2.cc:292 prints `Refinement broke in recent releases`",
+        vendor: Some(GitSha(
+            path: "vendor/jbig2enc",
+            sha: "e3fcf0210efa4f644e458a51616d86098d47d8da",
+        )),
+    ),
+    (
+        phase: Encode,
+        row: "jbig2enc:-s -r -d -t 0.85",
+        column: "*",
+        expect: FailContaining("Refinement broke in recent releases"),
+        upstream: "Same as system-binary row; vendored jbig2enc copy",
+        evidence: "vendor/jbig2enc/src/jbig2.cc:292 prints `Refinement broke in recent releases`",
+        vendor: Some(GitSha(
+            path: "vendor/jbig2enc",
+            sha: "e3fcf0210efa4f644e458a51616d86098d47d8da",
+        )),
+    ),
+]

@@ -20,6 +20,17 @@ pub struct IdentityClassification {
     pub instance_symbol: Vec<u32>,
 }
 
+impl IdentityClassification {
+    /// Fraction of components that survived as unique exact-match symbols.
+    pub fn dedup_ratio(&self) -> f32 {
+        if self.instance_symbol.is_empty() {
+            0.0
+        } else {
+            self.symbols.len() as f32 / self.instance_symbol.len() as f32
+        }
+    }
+}
+
 /// Build a lossless symbol library from a list of components. Components
 /// with pixel-identical bitmaps share a symbol index; otherwise a new
 /// symbol is appended to the library.

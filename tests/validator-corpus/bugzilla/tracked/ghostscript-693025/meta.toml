@@ -1,0 +1,15 @@
+bug_id = 693025
+url = "https://bugs.ghostscript.com/show_bug.cgi?id=693025"
+title = "various crashes and leaks"
+status = "RESOLVED FIXED"
+severity = "normal"
+attachment_id = 8577
+attachment_filename = "missing JBIG2Globals.pdf"
+attachment_mime = "application/pdf"
+sha256 = "ed6aeb5eb1c22bc57a515009300c8d7ce32e64fafd507e9cc883b130c5ad7f83"
+size = 1359
+clause_guess = "7.3.1"
+stream_status = "not-jbig2"
+embedded = false
+notes = "File without referenced JBIG2Globals: dangling segment references trigger crashes/leaks."
+attachment_format = "pdf"

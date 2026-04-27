@@ -1,0 +1,15 @@
+shape = "decoder-fixture"
+
+[decoder.rust]
+verdict = "Ok"
+not = ["panic", "oom"]
+note = "Baselined 2026-04: Jbig2Decoder accepts this stream. Upstream jbig2dec used to segfault here (RESOLVED FIXED). The contract enforces no-crash; a future audit may decide the file is structurally invalid and flip this verdict to RejectErr."
+
+[decoder.jbig2dec]
+verdict = "Unknown"
+upstream_status_at_baseline = "RESOLVED FIXED"
+note = "Pending baseline against vendor jbig2dec build."
+
+[decoder.itu_t88]
+verdict = "Unknown"
+note = "Pending baseline against ITU sample decoder."

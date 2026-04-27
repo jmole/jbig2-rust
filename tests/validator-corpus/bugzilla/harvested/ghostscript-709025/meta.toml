@@ -1,0 +1,14 @@
+bug_id = 709025
+url = "https://bugs.ghostscript.com/show_bug.cgi?id=709025"
+title = "Integer overflow in jbig2_find_changing_element of jbig2dec v0.20."
+status = "UNCONFIRMED"
+severity = "minor"
+attachment_id = 27565
+attachment_filename = "poc"
+attachment_mime = "application/octet-stream"
+sha256 = "ce6593690834c0b75962505e48ecf917589edaa5fae9cbc7ebc09c0fbf149956"
+size = 72618
+clause_guess = "Annex G"
+stream_status = "harvested"
+embedded = false
+notes = "MMR jbig2_find_changing_element: signed int overflow on changing-element column index."

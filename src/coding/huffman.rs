@@ -129,10 +129,7 @@ impl HuffTable {
         Ok(())
     }
 
-    fn lookup_encode(
-        &self,
-        value: Option<i32>,
-    ) -> Jbig2Result<(&HuffEntry, Option<(u32, u32)>)> {
+    fn lookup_encode(&self, value: Option<i32>) -> Jbig2Result<(&HuffEntry, Option<(u32, u32)>)> {
         for e in &self.entries {
             match (value, e.range_len) {
                 (None, -1) => return Ok((e, None)),
@@ -192,7 +189,11 @@ pub struct HuffReader<'a> {
 impl<'a> HuffReader<'a> {
     /// Start reading at the beginning of `buf`.
     pub fn new(buf: &'a [u8]) -> Self {
-        Self { buf, byte: 0, bit: 0 }
+        Self {
+            buf,
+            byte: 0,
+            bit: 0,
+        }
     }
 
     /// Read one bit.
@@ -252,7 +253,11 @@ pub struct HuffWriter {
 impl HuffWriter {
     /// New writer.
     pub fn new() -> Self {
-        Self { out: Vec::new(), acc: 0, bits: 0 }
+        Self {
+            out: Vec::new(),
+            acc: 0,
+            bits: 0,
+        }
     }
 
     /// Write one bit.
@@ -624,7 +629,8 @@ mod tests {
     fn round_trip(t: &HuffTable, values: &[Option<i32>]) {
         let mut w = HuffWriter::new();
         for &v in values {
-            t.encode(&mut w, v).unwrap_or_else(|e| panic!("table {} encode {v:?}: {e}", t.name));
+            t.encode(&mut w, v)
+                .unwrap_or_else(|e| panic!("table {} encode {v:?}: {e}", t.name));
         }
         let buf = w.finish();
         let mut r = HuffReader::new(&buf);
@@ -636,34 +642,96 @@ mod tests {
 
     #[test]
     fn b1_round_trip() {
-        round_trip(&table_b1(), &[
-            Some(0), Some(15), Some(16), Some(271), Some(272), Some(65_807), Some(65_808), Some(123_456),
-        ]);
+        round_trip(
+            &table_b1(),
+            &[
+                Some(0),
+                Some(15),
+                Some(16),
+                Some(271),
+                Some(272),
+                Some(65_807),
+                Some(65_808),
+                Some(123_456),
+            ],
+        );
     }
 
     #[test]
     fn b2_round_trip_including_oob() {
-        round_trip(&table_b2(), &[Some(0), Some(1), Some(2), Some(3), Some(10), Some(11), Some(74), Some(75), None]);
+        round_trip(
+            &table_b2(),
+            &[
+                Some(0),
+                Some(1),
+                Some(2),
+                Some(3),
+                Some(10),
+                Some(11),
+                Some(74),
+                Some(75),
+                None,
+            ],
+        );
     }
 
     #[test]
     fn b3_negative_ranges() {
-        round_trip(&table_b3(), &[Some(-256), Some(-1), Some(0), Some(74), Some(75), Some(-257), Some(-1000), None]);
+        round_trip(
+            &table_b3(),
+            &[
+                Some(-256),
+                Some(-1),
+                Some(0),
+                Some(74),
+                Some(75),
+                Some(-257),
+                Some(-1000),
+                None,
+            ],
+        );
     }
 
     #[test]
     fn b6_signed_delta() {
-        round_trip(&table_b6(), &[Some(-2048), Some(-1), Some(0), Some(127), Some(2047), Some(2048), Some(-2049), Some(100_000), Some(-100_000)]);
+        round_trip(
+            &table_b6(),
+            &[
+                Some(-2048),
+                Some(-1),
+                Some(0),
+                Some(127),
+                Some(2047),
+                Some(2048),
+                Some(-2049),
+                Some(100_000),
+                Some(-100_000),
+            ],
+        );
     }
 
     #[test]
     fn b7_wide() {
-        round_trip(&table_b7(), &[Some(-1024), Some(-1), Some(0), Some(31), Some(2047), Some(-1025), Some(50_000)]);
+        round_trip(
+            &table_b7(),
+            &[
+                Some(-1024),
+                Some(-1),
+                Some(0),
+                Some(31),
+                Some(2047),
+                Some(-1025),
+                Some(50_000),
+            ],
+        );
     }
 
     #[test]
     fn b14_three_values() {
-        round_trip(&table_b14(), &[Some(-2), Some(-1), Some(0), Some(1), Some(2)]);
+        round_trip(
+            &table_b14(),
+            &[Some(-2), Some(-1), Some(0), Some(1), Some(2)],
+        );
     }
 
     #[test]

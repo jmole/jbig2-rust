@@ -20,15 +20,31 @@ Cargo.lock.bak
 *.dylib
 *.dSYM/
 
+# Java / Maven build artifacts
+*.class
+*.jar
+*.war
+
 # Environment
 .env
 .env.local
 
-# Patent corpus (large)
+# Patent corpus (large, source symlink — not checked in)
 patent-samples
 
-# Local sandbox CARGO_HOME (see .cursor/rules/cargo-home-sandbox.mdc)
-/.cargo/
+# Frozen benchmark corpus is checked in for reproducibility;
+# guard against any future broad rule that might accidentally re-ignore it.
+!benchmark-corpus/
+!benchmark-corpus/**
+benchmark-corpus/rejected-tiffs/
+# Re-exclude macOS Finder droppings inside the corpus tree (the broad
+# `!benchmark-corpus/**` re-include above would otherwise track them).
+benchmark-corpus/**/.DS_Store
 
-# Cursor project rules / local state
+# Local sandbox CARGO_HOME
+/.cargo/
+vendor/.cargo/
+
+# Editor / agent local state
 /.cursor/
+

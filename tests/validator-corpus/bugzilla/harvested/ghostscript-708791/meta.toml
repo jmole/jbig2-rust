@@ -1,0 +1,14 @@
+bug_id = 708791
+url = "https://bugs.ghostscript.com/show_bug.cgi?id=708791"
+title = "integer overflow vulnerability"
+status = "RESOLVED DUPLICATE"
+severity = "critical"
+attachment_id = 27172
+attachment_filename = "poc.jb2"
+attachment_mime = "application/octet-stream"
+sha256 = "a9dee7948031b7e90852dc10a9c29d411dd65ae134fc38af7c09ecdde4057392"
+size = 322
+clause_guess = "7.4"
+stream_status = "harvested"
+embedded = false
+notes = "Integer overflow somewhere in segment data parsing; minimal POC (322 bytes)."

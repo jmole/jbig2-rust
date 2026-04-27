@@ -1,0 +1,14 @@
+bug_id = 696453
+url = "https://bugs.ghostscript.com/show_bug.cgi?id=696453"
+title = "Out of bounds heap read on malformed input in jbig2_image_compose()"
+status = "RESOLVED WONTFIX"
+severity = "normal"
+attachment_id = 12182
+attachment_filename = "jbig2dec-oob-heap-read-jbig2_image_compose.jbig2"
+attachment_mime = "application/octet-stream"
+sha256 = "d1d7cce7d239e56b4e5307ae5b67594585640058a624e271216fc519f270d45d"
+size = 83
+clause_guess = "6.2.5.3"
+stream_status = "harvested"
+embedded = false
+notes = "Out-of-bounds heap read in jbig2_image_compose during region composition (image-coord arithmetic)."

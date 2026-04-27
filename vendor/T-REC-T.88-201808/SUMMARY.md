@@ -638,9 +638,10 @@ part of the main Rust crate -- it is kept verbatim as:
   `mse(decoded, F01_200_TT9_TT00.bmp) == 0`, etc.
 - The **authoritative English-language specification** (`ITU-T_T_88__08_2018.docx`).
 
-The `.cursor/rules/cargo-home-sandbox.mdc` rule (use a local `CARGO_HOME`
-for Cargo commands in this repo) applies to the Rust side of the tree; it
-is not relevant to the `make`-based build of this reference package.
+The repo convention of using a local `CARGO_HOME` (e.g.
+`CARGO_HOME=./.cargo`) for Cargo commands applies to the Rust side of
+the tree; it is not relevant to the `make`-based build of this
+reference package.
 
 ---
 

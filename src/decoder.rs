@@ -150,7 +150,10 @@ fn decode_t45_colour_data(data: &[u8]) -> Jbig2Result<T45ColourData> {
 
     match num_components {
         1 => Ok(T45ColourData::PaletteIds(
-            values.chunks_exact(num_components).map(|sample| sample[0]).collect(),
+            values
+                .chunks_exact(num_components)
+                .map(|sample| sample[0])
+                .collect(),
         )),
         3.. => {
             let mut out = Vec::with_capacity(num_vals);
@@ -440,8 +443,7 @@ impl<R: Read + Seek> Jbig2Decoder<R> {
                 | SegmentType::ImmediateHalftoneRegion
                 | SegmentType::ImmediateLosslessHalftoneRegion => {
                     let seg_no = self.segments[idx].header.number;
-                    let (hdr, region_bitmap) =
-                        self.decode_halftone_region(idx, &pattern_dicts)?;
+                    let (hdr, region_bitmap) = self.decode_halftone_region(idx, &pattern_dicts)?;
                     if rgb_page.is_none() {
                         composite_region(
                             &mut page,
@@ -526,15 +528,9 @@ impl<R: Read + Seek> Jbig2Decoder<R> {
         let (header, coded) = parse_segment_header(body, |cur| SymbolDictionaryHeader::read(cur))?;
 
         let decoded = symbol_dictionary::decode_symbol_dictionary_with_contexts(
-            &header,
-            coded,
-            &import,
-            mq_cxs,
+            &header, coded, &import, mq_cxs,
         )?;
-        Ok((
-            seg_no,
-            decoded.exported.into_iter().map(Arc::new).collect(),
-        ))
+        Ok((seg_no, decoded.exported.into_iter().map(Arc::new).collect()))
     }
 
     fn decode_text_region(
@@ -621,36 +617,28 @@ impl<R: Read + Seek> Jbig2Decoder<R> {
                 T45ColourData::PaletteIds(ids) => ids
                     .into_iter()
                     .map(|id| {
-                        palette.get(id as usize).copied().ok_or(Jbig2Error::OutOfRange(
-                            "text region: colour palette ID out of range",
-                        ))
+                        palette
+                            .get(id as usize)
+                            .copied()
+                            .ok_or(Jbig2Error::OutOfRange(
+                                "text region: colour palette ID out of range",
+                            ))
                     })
                     .collect::<Jbig2Result<Vec<_>>>()?,
             };
             let region = text_region::decode_text_region_colour_with_contexts(
-                &header,
-                coded,
-                &sbsyms,
-                &colours,
-                mq_cxs,
+                &header, coded, &sbsyms, &colours, mq_cxs,
             )?;
             Ok(DecodedTextRegion::Colour(header, region))
         } else {
             let coded = &body[header_len..];
-            let region = text_region::decode_text_region_with_contexts(
-                &header,
-                coded,
-                &sbsyms,
-                mq_cxs,
-            )?;
+            let region =
+                text_region::decode_text_region_with_contexts(&header, coded, &sbsyms, mq_cxs)?;
             Ok(DecodedTextRegion::Mono(header, region))
         }
     }
 
-    fn decode_pattern_dictionary(
-        &mut self,
-        idx: usize,
-    ) -> Jbig2Result<(u32, Vec<Arc<Bitmap>>)> {
+    fn decode_pattern_dictionary(&mut self, idx: usize) -> Jbig2Result<(u32, Vec<Arc<Bitmap>>)> {
         let seg_no = self.segments[idx].header.number;
         let Self {
             reader,
@@ -667,10 +655,7 @@ impl<R: Read + Seek> Jbig2Decoder<R> {
         Ok((seg_no, patterns.into_iter().map(Arc::new).collect()))
     }
 
-    fn decode_colour_palette(
-        &mut self,
-        idx: usize,
-    ) -> Jbig2Result<(u32, Vec<[u8; 3]>)> {
+    fn decode_colour_palette(&mut self, idx: usize) -> Jbig2Result<(u32, Vec<[u8; 3]>)> {
         let seg_no = self.segments[idx].header.number;
         let Self {
             reader,
@@ -724,18 +709,12 @@ impl<R: Read + Seek> Jbig2Decoder<R> {
         let body = read_segment_body(reader, body_scratch, seg)?;
         let (header, coded) = parse_segment_header(body, |cur| HalftoneRegionHeader::read(cur))?;
         let region = halftone_region::decode_halftone_region_with_contexts(
-            &header,
-            coded,
-            &patterns,
-            mq_cxs,
+            &header, coded, &patterns, mq_cxs,
         )?;
         Ok((header, region))
     }
 
-    fn decode_generic_region(
-        &mut self,
-        idx: usize,
-    ) -> Jbig2Result<(GenericRegionHeader, Bitmap)> {
+    fn decode_generic_region(&mut self, idx: usize) -> Jbig2Result<(GenericRegionHeader, Bitmap)> {
         let Self {
             reader,
             segments,
@@ -749,7 +728,11 @@ impl<R: Read + Seek> Jbig2Decoder<R> {
         let bitmap = if header.mmr {
             #[cfg(feature = "mmr")]
             {
-                generic_region::decode_generic_mmr(coded, header.region.width, header.region.height)?
+                generic_region::decode_generic_mmr(
+                    coded,
+                    header.region.width,
+                    header.region.height,
+                )?
             }
             #[cfg(not(feature = "mmr"))]
             {
@@ -842,12 +825,17 @@ fn refinement_reference_for<'a>(
             return Ok((Cow::Borrowed(bm), 0, 0));
         }
     }
-    // Fall back to the page bitmap clipped to the region box. This mirrors
-    // jbig2dec's behaviour for "implicit" reference refinement regions.
+    // No decoded region reference was available; snapshot the current page
+    // under this region's bounds so refinement can use local coordinates.
     let w = header.region.width;
     let h = header.region.height;
     let mut bm = Bitmap::new(w, h)?;
-    bm.composite(page, -(header.region.x as i32), -(header.region.y as i32), crate::bitmap::BlitOp::Replace);
+    bm.composite(
+        page,
+        -(header.region.x as i32),
+        -(header.region.y as i32),
+        crate::bitmap::BlitOp::Replace,
+    );
     Ok((Cow::Owned(bm), 0, 0))
 }
 
@@ -1106,7 +1094,7 @@ mod tests {
             colour_extension: false,
         };
         let gr_hdr = GenericRegionHeader {
-            region: region_info.clone(),
+            region: region_info,
             mmr: false,
             template: 0,
             tpgdon: false,

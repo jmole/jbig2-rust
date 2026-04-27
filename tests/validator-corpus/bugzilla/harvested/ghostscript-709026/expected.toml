@@ -1,0 +1,15 @@
+shape = "decoder-fixture"
+
+[decoder.rust]
+verdict = "Ok"
+not = ["panic", "oom"]
+note = "Baselined 2026-04: Jbig2Decoder accepts this stream and produces a page. Upstream bug describes integer overflow in jbig2_decode_pattern_dict leading to unbounded allocation in jbig2dec; rust path appears not to hit the same arithmetic. Sandbox memory limits also bound the runtime envelope. Verdict reflects current observation; a deeper audit may flip to RejectErr if the file is shown to be structurally invalid."
+
+[decoder.jbig2dec]
+verdict = "Unknown"
+upstream_status_at_baseline = "UNCONFIRMED"
+note = "Pending baseline against vendor jbig2dec build."
+
+[decoder.itu_t88]
+verdict = "Unknown"
+note = "Pending baseline against ITU sample decoder."

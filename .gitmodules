@@ -7,3 +7,6 @@
 [submodule "vendor/image"]
 	path = vendor/image
 	url = https://github.com/image-rs/image.git
+[submodule "vendor/jbig2dec"]
+	path = vendor/jbig2dec
+	url = https://github.com/ArtifexSoftware/jbig2dec.git

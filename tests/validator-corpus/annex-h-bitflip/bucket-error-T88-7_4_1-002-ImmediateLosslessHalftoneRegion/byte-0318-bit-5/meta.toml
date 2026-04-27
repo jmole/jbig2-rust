@@ -1,0 +1,6 @@
+base_path = "vendor/jbig2dec/annex-h.jbig2"
+base_sha256 = "72f995d9ca340913d0558ce49ea61226c6c6e423b28a63111d537455e944fdcb"
+byte_offset = 318
+bit_index = 5
+bucket = "bucket-error-T88-7_4_1-002-ImmediateLosslessHalftoneRegion"
+bucketing_rule_version = 1

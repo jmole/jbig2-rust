@@ -57,18 +57,10 @@
 //! * `rayon` ? parallel classifier and multi-page encode (reserved for M7).
 //! * `cli` ? builds the `jbig2` binary (pulls in `clap` + `anyhow`).
 //!
-//! # Benchmarks
+//! # Performance Work
 //!
-//! Criterion benches live in `benches/codec.rs`. Run:
-//!
-//! ```text
-//! cargo bench --bench codec
-//! ```
-//!
-//! to measure encode + decode throughput on synthetic stripe / glyph
-//! bitmaps. SIMD context extraction and a Rayon-accelerated classifier
-//! are gated for a future release once the functional deferrals above
-//! are closed out.
+//! SIMD context extraction and a Rayon-accelerated classifier are gated
+//! for a future release once the functional deferrals above are closed out.
 //!
 //! # Example
 //!
@@ -99,12 +91,14 @@ pub mod error;
 pub mod rgb_bitmap;
 pub mod segments;
 pub mod symbol;
+pub mod util;
+pub mod validator;
 
 pub use bitmap::Bitmap;
 pub use decoder::{DecodedPage, Jbig2Decoder};
 pub use encoder::{
     Coding, EncoderConfig, GenericTemplate, HalftonePageOptions, Jbig2Encoder, Mode,
-    SymbolCoding,
+    RefinementGate, SymbolCoding,
 };
 pub use error::{Jbig2Error, Jbig2Result};
 pub use rgb_bitmap::RgbBitmap;

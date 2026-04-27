@@ -83,25 +83,23 @@ impl Index<usize> for AtPixels {
 pub use colour_palette::{ColourPalette, ColourPaletteHeader, DEFAULT_COLOURS};
 pub use end_of_page::EndOfPage;
 pub use file_header::FileHeader;
-pub use generic_region::{GenericRegionHeader, nominal_at};
-pub use halftone_region::{
-    HalftoneRegionHeader, decode_halftone_region, encode_halftone_region,
-};
+pub use generic_region::{nominal_at, GenericRegionHeader};
+pub use halftone_region::{decode_halftone_region, encode_halftone_region, HalftoneRegionHeader};
 pub use header::{SegmentHeader, SegmentType};
 pub use page_information::{CombinationOp, PageInformation};
 pub use pattern_dictionary::{
-    PatternDictionaryHeader, decode_pattern_dictionary, encode_pattern_dictionary,
+    decode_pattern_dictionary, encode_pattern_dictionary, PatternDictionaryHeader,
 };
-pub use region_info::RegionInfo;
 pub use refinement_region::{
     decode_refinement_region, encode_refinement_region, RefinementRegionHeader,
     NOMINAL_REFINEMENT_AT,
 };
+pub use region_info::RegionInfo;
 pub use symbol_dictionary::{
-    DecodedSymbolDictionary, SymbolDictionaryHeader, decode_symbol_dictionary,
-    encode_symbol_dictionary,
+    decode_symbol_dictionary, encode_symbol_dictionary, DecodedSymbolDictionary,
+    SymbolDictionaryHeader,
 };
 pub use text_region::{
-    RefCorner, SymbolInstance, TextRegionHeader, decode_text_region, encode_text_region,
-    sym_code_len,
+    decode_text_region, encode_text_region, sym_code_len, RefCorner, SymbolInstance,
+    TextRegionHeader,
 };

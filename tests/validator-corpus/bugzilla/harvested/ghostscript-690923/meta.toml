@@ -1,0 +1,14 @@
+bug_id = 690923
+url = "https://bugs.ghostscript.com/show_bug.cgi?id=690923"
+title = "Wrong text positioning when symbol instance coordinates are transposed"
+status = "RESOLVED FIXED"
+severity = "normal"
+attachment_id = 5675
+attachment_filename = "042_19.jb2"
+attachment_mime = "application/octet-stream"
+sha256 = "a445f751cddfed900e408623664f0d12a439e79aaf0ddce34213da1c43a77f95"
+size = 39459
+clause_guess = "7.4.3.1.4"
+stream_status = "harvested"
+embedded = false
+notes = "SBSTRIPS / coordinate sign handling: negative symbol-instance T coordinate in a text region."

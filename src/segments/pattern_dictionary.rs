@@ -5,7 +5,9 @@ use std::io::{Read, Write};
 use crate::bitmap::Bitmap;
 use crate::coding::mq::{MqContexts, MqDecoder, MqEncoder, MQ_NUM_CONTEXTS};
 use crate::error::{Jbig2Error, Jbig2Result};
-use crate::segments::generic_region::{decode_generic_arith, decode_generic_mmr, GenericRegionHeader};
+use crate::segments::generic_region::{
+    decode_generic_arith, decode_generic_mmr, GenericRegionHeader,
+};
 use crate::segments::page_information::CombinationOp;
 use crate::segments::region_info::RegionInfo;
 use crate::segments::AtPixels;
@@ -83,7 +85,10 @@ fn pattern_collective_header(header: &PatternDictionaryHeader) -> GenericRegionH
     }
 }
 
-fn build_collective_bitmap(header: &PatternDictionaryHeader, patterns: &[Bitmap]) -> Jbig2Result<Bitmap> {
+fn build_collective_bitmap(
+    header: &PatternDictionaryHeader,
+    patterns: &[Bitmap],
+) -> Jbig2Result<Bitmap> {
     if patterns.is_empty() {
         return Err(Jbig2Error::OutOfRange(
             "pattern dictionary: need at least one pattern",
@@ -107,7 +112,10 @@ fn build_collective_bitmap(header: &PatternDictionaryHeader, patterns: &[Bitmap]
             "pattern dictionary: pattern sizes do not match header",
         ));
     }
-    let mut collective = Bitmap::new((header.gray_max + 1) * header.hdpw as u32, header.hdph as u32)?;
+    let mut collective = Bitmap::new(
+        (header.gray_max + 1) * header.hdpw as u32,
+        header.hdph as u32,
+    )?;
     for (idx, pat) in patterns.iter().enumerate() {
         let x_off = idx as i32 * header.hdpw as i32;
         collective.composite(pat, x_off, 0, crate::bitmap::BlitOp::Replace);
@@ -194,7 +202,12 @@ pub fn encode_pattern_dictionary_with_contexts(
     } else {
         cxs.reset();
         let mut enc = MqEncoder::new(collective.data().len() + 16);
-        crate::segments::generic_region::encode_generic_arith(&mut enc, cxs, &collective_hdr, &collective)?;
+        crate::segments::generic_region::encode_generic_arith(
+            &mut enc,
+            cxs,
+            &collective_hdr,
+            &collective,
+        )?;
         Ok(enc.finish())
     }
 }

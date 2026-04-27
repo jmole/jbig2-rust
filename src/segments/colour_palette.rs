@@ -193,8 +193,7 @@ mod tests {
             0x03, // components
             0x01, // component length
             0x00, 0x00, 0x00, 0x02, // values
-            0x01, 0x02, 0x03,
-            0x04, 0x05, 0x06,
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06,
         ];
         let pal = ColourPalette::decode(&body).unwrap();
         assert_eq!(pal.rgb_values().unwrap(), vec![[1, 2, 3], [4, 5, 6]]);

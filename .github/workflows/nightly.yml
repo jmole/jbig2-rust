@@ -1,0 +1,78 @@
+name: nightly-corpus
+
+on:
+  schedule:
+    - cron: "17 7 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  CARGO_HOME: ${{ github.workspace }}/.cargo
+  NIGHTLY_ISSUE_TITLE: nightly tier-1 corpus failure
+
+jobs:
+  tier-1:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install jbig2dec build deps
+        run: sudo apt-get update && sudo apt-get install -y autoconf automake libtool make gcc pkg-config
+
+      - name: Build vendored jbig2dec
+        run: |
+          cd vendor/jbig2dec
+          ./autogen.sh
+          ./configure
+          make jbig2dec
+
+      - name: Build rust decoder
+        run: cargo build --release --bin jbig2-decode --features cli
+
+      - name: Run full corpus tier-1
+        run: cargo run --release --features validator-corpus --bin corpus-validator -- --strict --with-c-decoders
+
+      - name: Upload corpus report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: corpus-report-${{ github.run_id }}
+          path: target/corpus-report.md
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Find existing nightly issue
+        if: failure() && github.event_name == 'schedule'
+        id: find_issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const title = process.env.NIGHTLY_ISSUE_TITLE;
+            const result = await github.rest.search.issuesAndPullRequests({
+              q: `repo:${owner}/${repo} is:issue is:open in:title "${title}"`
+            });
+            const issue = result.data.items.find((item) => item.title === title);
+            if (issue) {
+              core.setOutput("issue_number", String(issue.number));
+            } else {
+              core.setOutput("issue_number", "");
+            }
+
+      - name: Open or update nightly tracking issue
+        if: failure() && github.event_name == 'schedule'
+        uses: peter-evans/create-issue-from-file@v5
+        with:
+          title: ${{ env.NIGHTLY_ISSUE_TITLE }}
+          content-filepath: .github/nightly-tier1-failure.md
+          issue-number: ${{ steps.find_issue.outputs.issue_number }}
+          labels: ci, corpus, nightly

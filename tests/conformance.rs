@@ -12,7 +12,7 @@ mod common;
 use jbig2::Jbig2Decoder;
 use std::io::Cursor;
 
-use common::{conformance_dir, load_conformance_bmp, ReferenceImage};
+use common::{conformance_dir, load_bmp_path, load_conformance_bmp, ReferenceImage};
 
 fn decode_page(jb2: &str) -> jbig2::DecodedPage {
     let path = conformance_dir().join(jb2);
@@ -21,9 +21,7 @@ fn decode_page(jb2: &str) -> jbig2::DecodedPage {
     dec.decode_page(1).expect("decode page 1")
 }
 
-fn compare_to_reference(jb2: &str, bmp: &str) {
-    let decoded = decode_page(jb2);
-    let expected = load_conformance_bmp(bmp);
+fn assert_decoded_matches(jb2: &str, decoded: jbig2::DecodedPage, expected: ReferenceImage) {
     match expected {
         ReferenceImage::Mono(expected) => {
             let decoded = decoded.bitmap;
@@ -78,6 +76,35 @@ fn compare_to_reference(jb2: &str, bmp: &str) {
     }
 }
 
+fn compare_to_reference(jb2: &str, bmp: &str) {
+    let decoded = decode_page(jb2);
+    assert_decoded_matches(jb2, decoded, load_conformance_bmp(bmp));
+}
+
+fn compare_page_to_reference(jb2: &str, page_no: u32, bmp: &str) {
+    let path = conformance_dir().join(jb2);
+    let data = std::fs::read(&path).unwrap_or_else(|e| panic!("read {path:?}: {e}"));
+    let mut dec = Jbig2Decoder::new(Cursor::new(data)).expect("parse file header");
+    let decoded = dec
+        .decode_page(page_no)
+        .unwrap_or_else(|e| panic!("decode page {page_no}: {e}"));
+    assert_decoded_matches(jb2, decoded, load_conformance_bmp(bmp));
+}
+
+fn compare_path_page_to_reference(
+    jb2: &str,
+    jb2_path: &std::path::Path,
+    page_no: u32,
+    bmp_path: &std::path::Path,
+) {
+    let data = std::fs::read(jb2_path).unwrap_or_else(|e| panic!("read {jb2_path:?}: {e}"));
+    let mut dec = Jbig2Decoder::new(Cursor::new(data)).expect("parse file header");
+    let decoded = dec
+        .decode_page(page_no)
+        .unwrap_or_else(|e| panic!("decode page {page_no}: {e}"));
+    assert_decoded_matches(jb2, decoded, load_bmp_path(bmp_path));
+}
+
 // T.6 MMR generic region against the T.88 reference stream. The earlier
 // desync at line 66 was resolved once the LUT-driven decoder in
 // `crate::coding::mmr_lut` took over the hot path; see `tests/mmr_diag.rs`
@@ -102,6 +129,11 @@ fn tt1_pattern_plus_symbols() {
 }
 
 #[test]
+fn tt1_page3_refagg_symbols() {
+    compare_page_to_reference("codeStreamTest1_TT1.jb2", 3, "codeStreamTest1_TT1_TT02.bmp");
+}
+
+#[test]
 fn tt2_huffman_symbol_region() {
     compare_to_reference("codeStreamTest1_TT2.jb2", "codeStreamTest1_TT2_TT00.bmp");
 }
@@ -121,6 +153,9 @@ fn tt4_arithmetic_symbol_region() {
     compare_to_reference("codeStreamTest1_TT4.jb2", "codeStreamTest1_TT4_TT00.bmp");
 }
 
+// TT5 exercises symbol-dictionary refinement/aggregate coding. The decoder
+// intentionally follows the ITU sample encoder's refinement context order
+// here, because the T.88 conformance streams were authored with that code.
 #[test]
 fn tt5_arithmetic_symbol_region_imports() {
     compare_to_reference("codeStreamTest1_TT5.jb2", "codeStreamTest1_TT5_TT00.bmp");
@@ -141,6 +176,21 @@ fn tt8_colour_text_region() {
     compare_to_reference("codeStreamTest3_TT8.jb2", "codeStreamTest3_TT8_TT00.bmp");
 }
 
+#[test]
+fn annex_h_page1_artifex_fixture() {
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    compare_path_page_to_reference(
+        "annex-h.jbig2",
+        &root.join("vendor").join("jbig2dec").join("annex-h.jbig2"),
+        1,
+        &root
+            .join("vendor")
+            .join("T-REC-T.88-201808")
+            .join("spec")
+            .join("annex-h-page-00.bmp"),
+    );
+}
+
 /// Validates the encoder path: take the T10 reference bitmap, encode it with
 /// the arithmetic generic-region encoder, then decode the result and assert
 /// pixel identity. This proves the encoder is round-trip safe at page scale.
@@ -148,9 +198,7 @@ fn tt8_colour_text_region() {
 fn arithmetic_generic_round_trip_page_scale() {
     use jbig2::coding::mq::{MqContexts, MqEncoder, MQ_NUM_CONTEXTS};
     use jbig2::segments::file_header::FileHeader;
-    use jbig2::segments::generic_region::{
-        encode_generic_arith, nominal_at, GenericRegionHeader,
-    };
+    use jbig2::segments::generic_region::{encode_generic_arith, nominal_at, GenericRegionHeader};
     use jbig2::segments::page_information::{CombinationOp, PageInformation};
     use jbig2::segments::region_info::RegionInfo;
     use jbig2::segments::{SegmentHeader, SegmentType};
@@ -249,8 +297,7 @@ fn arithmetic_generic_round_trip_page_scale() {
     .unwrap();
 
     let compressed_size = out.len();
-    let uncompressed_size =
-        (width as usize + 7) / 8 * height as usize;
+    let uncompressed_size = (width as usize).div_ceil(8) * height as usize;
     eprintln!(
         "page {}x{}: encoded={} bytes, raw={} bytes, ratio={:.2}",
         width,
@@ -262,5 +309,8 @@ fn arithmetic_generic_round_trip_page_scale() {
 
     let mut dec = Jbig2Decoder::new(Cursor::new(out)).unwrap();
     let page = dec.decode_page(1).unwrap();
-    assert_eq!(page.bitmap, expected, "encoder round-trip produced mismatched bitmap");
+    assert_eq!(
+        page.bitmap, expected,
+        "encoder round-trip produced mismatched bitmap"
+    );
 }

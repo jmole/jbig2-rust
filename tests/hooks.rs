@@ -42,7 +42,11 @@ fn register_then_guess_format_and_decode() {
     for y in 0..h {
         for x in 0..w {
             let pix = pixels[(y * w + x) as usize];
-            let expected = if bm.get_pixel(x as i32, y as i32) == 1 { 0 } else { 255 };
+            let expected = if bm.get_pixel(x as i32, y as i32) == 1 {
+                0
+            } else {
+                255
+            };
             assert_eq!(pix, expected, "pixel mismatch at ({x},{y})");
         }
     }

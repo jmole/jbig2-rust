@@ -1,0 +1,14 @@
+bug_id = 698776
+url = "https://bugs.ghostscript.com/show_bug.cgi?id=698776"
+title = "jbig2dec fails to parse \"immediate generic region\" segment with unspecified length"
+status = "RESOLVED FIXED"
+severity = "normal"
+attachment_id = 14488
+attachment_filename = "bug5200_p1_I1.jbig2"
+attachment_mime = "application/octet-stream"
+sha256 = "accb5a6533f6237f6e372f86c7c8fdcdc53e726c50e9dda48dd48fff8ece0bbb"
+size = 2897
+clause_guess = "7.4.6.4"
+stream_status = "harvested"
+embedded = false
+notes = "Immediate generic region with TPGDON=1 fails (typical-prediction generic-decoding) - jbig2dec mis-parses; canonical example for 7.4.6.4 / 6.2.5."

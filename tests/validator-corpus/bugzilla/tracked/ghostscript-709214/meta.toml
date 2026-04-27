@@ -1,0 +1,15 @@
+bug_id = 709214
+url = "https://bugs.ghostscript.com/show_bug.cgi?id=709214"
+title = "jbig2_text.c: off-by-one in NINSTANCES check allows extra symbol instance (line 294)"
+status = "UNCONFIRMED"
+severity = "minor"
+attachment_id = 27936
+attachment_filename = "poc_jbig2_text.pdf"
+attachment_mime = "application/pdf"
+sha256 = "88599a83834c83bc09e007566908ef39f067de2ff47fc55eff0a2560e0e7c578"
+size = 808
+clause_guess = "7.4.3.1.7"
+stream_status = "not-jbig2"
+embedded = false
+notes = "Off-by-one in NINSTANCES check inside text-region decoding (jbig2_text.c) allowing extra symbol instances."
+attachment_format = "pdf"

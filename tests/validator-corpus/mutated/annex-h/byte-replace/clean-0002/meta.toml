@@ -1,0 +1,6 @@
+seed_name = "annex-h"
+seed_sha256 = "72f995d9ca340913d0558ce49ea61226c6c6e423b28a63111d537455e944fdcb"
+schedule = "byte-replace"
+rng_seed = 0x4242424242424242
+case_id = 2
+mutation = "byte-replace byte=140 value=0x84"

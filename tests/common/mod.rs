@@ -2,7 +2,10 @@
 //! BMP reader.
 #![allow(dead_code)]
 
-use std::path::PathBuf;
+pub mod corpus;
+pub mod oracles;
+
+use std::path::{Path, PathBuf};
 
 use jbig2::{Bitmap, RgbBitmap};
 
@@ -24,7 +27,12 @@ pub fn conformance_dir() -> PathBuf {
 /// Load a conformance BMP from the vendored test set.
 pub fn load_conformance_bmp(name: &str) -> ReferenceImage {
     let path = conformance_dir().join(name);
-    let data = std::fs::read(&path).unwrap_or_else(|e| panic!("read {path:?}: {e}"));
+    load_bmp_path(&path)
+}
+
+/// Load a BMP from an arbitrary path.
+pub fn load_bmp_path(path: &Path) -> ReferenceImage {
+    let data = std::fs::read(path).unwrap_or_else(|e| panic!("read {path:?}: {e}"));
     match u16::from_le_bytes(data[28..30].try_into().unwrap()) {
         1 => ReferenceImage::Mono(parse_bmp_1bpp(&data)),
         24 => ReferenceImage::Rgb(parse_bmp_24bpp(&data)),
@@ -52,8 +60,8 @@ fn parse_bmp_1bpp(data: &[u8]) -> Bitmap {
     let zero_is_ink = pal0[0] <= 0x40 && pal0[1] <= 0x40 && pal0[2] <= 0x40;
 
     // BMP rows are padded to 4-byte boundaries.
-    let row_bytes = (((width_u + 31) / 32) * 4) as usize;
-    let stride = ((width_u + 7) / 8) as usize;
+    let row_bytes = (width_u.div_ceil(32) * 4) as usize;
+    let stride = width_u.div_ceil(8) as usize;
     let mut bm = Bitmap::new(width_u, height).unwrap();
     for y in 0..height {
         let src_y = if top_down { y } else { height - 1 - y };

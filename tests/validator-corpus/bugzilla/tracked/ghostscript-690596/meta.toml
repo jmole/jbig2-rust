@@ -1,0 +1,15 @@
+bug_id = 690596
+url = "https://bugs.ghostscript.com/show_bug.cgi?id=690596"
+title = "memleak with jbig2 images"
+status = "RESOLVED FIXED"
+severity = "normal"
+attachment_id = 5180
+attachment_filename = "jbig-decode-error.pdf"
+attachment_mime = "application/pdf"
+sha256 = "bbda4f6e02ccdaacbfb02a05665a81a9d8c695fa791dbe8cb248454f56eef19f"
+size = 31612
+clause_guess = "unknown"
+stream_status = "not-jbig2"
+embedded = false
+notes = "Memory leak when decoding a JBIG2 PDF; no specific clause attributed."
+attachment_format = "pdf"

@@ -26,7 +26,7 @@ use std::io::{Read, Write};
 use crate::bitmap::Bitmap;
 use crate::coding::mq::{MqContexts, MqDecoder, MqEncoder};
 use crate::error::{Jbig2Error, Jbig2Result};
-use crate::segments::{AtPixels, region_info::RegionInfo};
+use crate::segments::{region_info::RegionInfo, AtPixels};
 
 /// SLTP context index used when `TPGRON = 1`. The spec leaves the bit
 /// assignment for the refinement template up to each implementation; we
@@ -34,8 +34,7 @@ use crate::segments::{AtPixels, region_info::RegionInfo};
 /// (`Jb2_MQLapper.cpp::CX_RefEncode`), which is the codec used to
 /// produce the official conformance suite. For template 0 the SLTP
 /// context is `bit 4` set (the central reference pixel under that
-/// layout), and for template 1 it is `bit 6` set
-/// (matching jbig2dec's mkctx1 which also matches the reference).
+/// layout), and for template 1 it is `bit 6` set.
 const SLTP_CX_T0: usize = 0x0010;
 const SLTP_CX_T1: usize = 0x0040;
 
@@ -86,7 +85,7 @@ impl RefinementRegionHeader {
         w.write_all(&[flags])?;
         if self.template == 0 {
             for i in 0..2 {
-                    w.write_all(&[self.at[i].0 as u8, self.at[i].1 as u8])?;
+                w.write_all(&[self.at[i].0 as u8, self.at[i].1 as u8])?;
             }
         }
         Ok(())
@@ -97,7 +96,20 @@ impl RefinementRegionHeader {
 /// placement is `(-1, -1)` for both the target-neighbourhood AT pixel
 /// (index 0) and the reference-neighbourhood AT pixel (index 1).
 pub const NOMINAL_REFINEMENT_AT: AtPixels = AtPixels::new(
-    [(-1, -1), (-1, -1), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0)],
+    [
+        (-1, -1),
+        (-1, -1),
+        (0, 0),
+        (0, 0),
+        (0, 0),
+        (0, 0),
+        (0, 0),
+        (0, 0),
+        (0, 0),
+        (0, 0),
+        (0, 0),
+        (0, 0),
+    ],
     2,
 );
 
@@ -133,7 +145,11 @@ pub fn decode_refinement_region(
     if width == 0 || height == 0 {
         return Ok(target);
     }
-    let sltp_cx = if template == 0 { SLTP_CX_T0 } else { SLTP_CX_T1 };
+    let sltp_cx = if template == 0 {
+        SLTP_CX_T0
+    } else {
+        SLTP_CX_T1
+    };
     let mut ltp: u8 = 0;
     for y in 0..height as i32 {
         if tpgron {
@@ -149,9 +165,7 @@ pub fn decode_refinement_region(
                     continue;
                 }
             }
-            let cx = build_refinement_ctx(
-                template, &target, reference, x, y, ref_x, ref_y, at,
-            );
+            let cx = build_refinement_ctx(template, &target, reference, x, y, ref_x, ref_y, at);
             let bit = dec.decode(cxs, cx);
             target.set_pixel(x, y, bit);
         }
@@ -188,7 +202,11 @@ pub fn encode_refinement_region(
     if width == 0 || height == 0 {
         return Ok(());
     }
-    let sltp_cx = if template == 0 { SLTP_CX_T0 } else { SLTP_CX_T1 };
+    let sltp_cx = if template == 0 {
+        SLTP_CX_T0
+    } else {
+        SLTP_CX_T1
+    };
     let mut ltp: u8 = 0;
     for y in 0..height as i32 {
         if tpgron {
@@ -201,14 +219,10 @@ pub fn encode_refinement_region(
         for x in 0..width as i32 {
             let ref_x = x - reference_dx;
             let ref_y = y - reference_dy;
-            if ltp == 1 {
-                if uniform_ref_neighbourhood(reference, ref_x, ref_y).is_some() {
-                    continue;
-                }
+            if ltp == 1 && uniform_ref_neighbourhood(reference, ref_x, ref_y).is_some() {
+                continue;
             }
-            let cx = build_refinement_ctx(
-                template, target, reference, x, y, ref_x, ref_y, at,
-            );
+            let cx = build_refinement_ctx(template, target, reference, x, y, ref_x, ref_y, at);
             let bit = target.get_pixel(x, y);
             enc.encode(cxs, cx, bit);
         }
@@ -219,18 +233,11 @@ pub fn encode_refinement_region(
 /// Build the refinement-region context word for target pixel `(x, y)`.
 ///
 /// The bit assignment is implementation-defined by the spec (6.3.5.3
-/// only requires it to be consistent across encoder and decoder), so we
-/// mirror the layout used by the ITU-T T.88 reference encoder
-/// (`Jb2_MQLapper.cpp::CX_RefEncode`). That same convention is what the
-/// official conformance suite uses, which is what makes TT4–TT7 decode
-/// bit-exact.
+/// only requires it to be consistent across encoder and decoder). The T.88
+/// conformance streams were authored by the ITU sample encoder, so this layout
+/// mirrors `Jb2_MQLapper.cpp::CX_RefEncode`.
 ///
-/// Template 0 (13-bit context). Note that the reference encoder pulls
-/// the bottom three reference pixels from the row *above* the reference
-/// pixel rather than the row below; this is almost certainly a bug in
-/// the reference codec, but since both encoder and decoder there agree,
-/// the conformance bitstream depends on it. We replicate the layout
-/// exactly:
+/// Template 0 (13-bit context):
 ///
 /// ```text
 ///   bit 12 : ref(ref_x + GRAT1X, ref_y + GRAT1Y)   (default -1,-1)
@@ -238,29 +245,28 @@ pub fn encode_refinement_region(
 ///   bit 10 : target(x,     y - 1)
 ///   bit  9 : target(x + 1, y - 1)
 ///   bit  8 : target(x - 1, y)
-///   bit  7 : ref(ref_x,     ref_y - 1)
-///   bit  6 : ref(ref_x + 1, ref_y - 1)
-///   bit  5 : ref(ref_x - 1, ref_y)
-///   bit  4 : ref(ref_x,     ref_y)              <-- SLTP central pixel
-///   bit  3 : ref(ref_x + 1, ref_y)
-///   bit  2 : ref(ref_x - 1, ref_y - 1)
-///   bit  1 : ref(ref_x,     ref_y - 1)          (duplicates bit 7)
-///   bit  0 : ref(ref_x + 1, ref_y - 1)          (duplicates bit 6)
+///   bit  7 : ref(ref_x + 0,       ref_y - 1)
+///   bit  6 : ref(ref_x + 1,       ref_y - 1)
+///   bit  5 : ref(ref_x - 1,       ref_y + 0)
+///   bit  4 : ref(ref_x + 0,       ref_y + 0)
+///   bit  3 : ref(ref_x + 1,       ref_y + 0)
+///   bit  2 : ref(ref_x - 1,       ref_y - 1)
+///   bit  1 : ref(ref_x + 0,       ref_y - 1)
+///   bit  0 : ref(ref_x + 1,       ref_y - 1)
 /// ```
 ///
-/// Template 1 (10-bit context, no AT pixels). The reference encoder
-/// here is well-formed and matches `jbig2dec`'s `mkctx1`:
+/// Template 1 (10-bit context, no AT pixels):
 ///
 /// ```text
 ///   bit  9 : target(x - 1, y - 1)
 ///   bit  8 : target(x,     y - 1)
 ///   bit  7 : target(x + 1, y - 1)
-///   bit  6 : target(x - 1, y)                   <-- SLTP indicator pixel
-///   bit  5 : ref(ref_x,     ref_y - 1)
-///   bit  4 : ref(ref_x - 1, ref_y)
-///   bit  3 : ref(ref_x,     ref_y)
-///   bit  2 : ref(ref_x + 1, ref_y)
-///   bit  1 : ref(ref_x,     ref_y + 1)
+///   bit  6 : target(x - 1, y)
+///   bit  5 : ref(ref_x + 0, ref_y - 1)
+///   bit  4 : ref(ref_x - 1, ref_y + 0)
+///   bit  3 : ref(ref_x + 0, ref_y + 0)
+///   bit  2 : ref(ref_x + 1, ref_y + 0)
+///   bit  1 : ref(ref_x + 0, ref_y + 1)
 ///   bit  0 : ref(ref_x + 1, ref_y + 1)
 /// ```
 #[inline]
@@ -277,18 +283,15 @@ fn build_refinement_ctx(
     match template {
         0 => {
             let target_at = target.get_pixel(x + at[0].0 as i32, y + at[0].1 as i32) as u32;
-            let ref_at =
-                reference.get_pixel(ref_x + at[1].0 as i32, ref_y + at[1].1 as i32) as u32;
-            let r_xp1_ym1 = reference.get_pixel(ref_x + 1, ref_y - 1) as u32;
-            let r_x_ym1 = reference.get_pixel(ref_x, ref_y - 1) as u32;
-            let cx = r_xp1_ym1
-                | (r_x_ym1 << 1)
+            let ref_at = reference.get_pixel(ref_x + at[1].0 as i32, ref_y + at[1].1 as i32) as u32;
+            let cx = (reference.get_pixel(ref_x + 1, ref_y - 1) as u32)
+                | ((reference.get_pixel(ref_x, ref_y - 1) as u32) << 1)
                 | ((reference.get_pixel(ref_x - 1, ref_y - 1) as u32) << 2)
                 | ((reference.get_pixel(ref_x + 1, ref_y) as u32) << 3)
                 | ((reference.get_pixel(ref_x, ref_y) as u32) << 4)
                 | ((reference.get_pixel(ref_x - 1, ref_y) as u32) << 5)
-                | (r_xp1_ym1 << 6)
-                | (r_x_ym1 << 7)
+                | ((reference.get_pixel(ref_x + 1, ref_y - 1) as u32) << 6)
+                | ((reference.get_pixel(ref_x, ref_y - 1) as u32) << 7)
                 | ((target.get_pixel(x - 1, y) as u32) << 8)
                 | ((target.get_pixel(x + 1, y - 1) as u32) << 9)
                 | ((target.get_pixel(x, y - 1) as u32) << 10)

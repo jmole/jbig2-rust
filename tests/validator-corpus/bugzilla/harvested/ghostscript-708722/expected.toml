@@ -1,0 +1,16 @@
+shape = "decoder-fixture"
+
+[decoder.rust]
+verdict = "RejectErr"
+not = ["panic", "oom"]
+note = "Baselined 2026-04: rejects on segment with unknown data length. Bug describes uncontrolled allocation in jbig2_hd_new; rust decoder rejects before any allocation."
+baseline_signature = "exit=1; jbig2-decode: Jbig2Decoder::new failed: unsupported feature: segment with unknown data length"
+
+[decoder.jbig2dec]
+verdict = "Unknown"
+upstream_status_at_baseline = "UNCONFIRMED"
+note = "Pending baseline against vendor jbig2dec build."
+
+[decoder.itu_t88]
+verdict = "Unknown"
+note = "Pending baseline against ITU sample decoder."

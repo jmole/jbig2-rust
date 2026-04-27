@@ -1,0 +1,14 @@
+bug_id = 709028
+url = "https://bugs.ghostscript.com/show_bug.cgi?id=709028"
+title = "Integer overflow in jbig2_arith_int_decode of jbig2dec v0.20."
+status = "UNCONFIRMED"
+severity = "minor"
+attachment_id = 27568
+attachment_filename = "poc"
+attachment_mime = "application/octet-stream"
+sha256 = "1de6bcb1b5bb7dc2007aab67d332eef89ea06b81d9121b5a44b978aeb61c7fd0"
+size = 47551
+clause_guess = "Annex A.2"
+stream_status = "harvested"
+embedded = false
+notes = "jbig2_arith_int_decode: integer overflow in IADT/IADW/IADH/etc. integer arithmetic decoders."

@@ -1,0 +1,15 @@
+bug_id = 691958
+url = "https://bugs.ghostscript.com/show_bug.cgi?id=691958"
+title = "jbig2_complete_page doesn't check if there's a page at all"
+status = "RESOLVED FIXED"
+severity = "normal"
+attachment_id = 7238
+attachment_filename = "jbig2dec crash.pdf"
+attachment_mime = "application/pdf"
+sha256 = "cb11a97f593429ca5272029a112a86e7e3a7eab5904c455be9a5e3d64045533c"
+size = 506
+clause_guess = "7.4.8"
+stream_status = "not-jbig2"
+embedded = false
+notes = "jbig2_complete_page: end-of-page reached with no page-information segment seen - missing required state check."
+attachment_format = "pdf"
