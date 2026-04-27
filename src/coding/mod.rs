@@ -1,4 +1,5 @@
 //! Low-level coding primitives used by JBIG2 segments.
+#![forbid(unsafe_code)]
 
 pub mod huffman;
 pub mod mmr;

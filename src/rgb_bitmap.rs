@@ -1,4 +1,5 @@
 //! Simple packed RGB bitmap used for AMD3 colour output pages.
+#![forbid(unsafe_code)]
 
 use crate::bitmap::Bitmap;
 use crate::error::{Jbig2Error, Jbig2Result};

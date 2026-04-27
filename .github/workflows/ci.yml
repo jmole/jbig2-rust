@@ -39,6 +39,16 @@ jobs:
       - name: Run clippy (warning-only)
         run: cargo clippy --workspace --all-targets --features validator-corpus,conformance-tools,sandbox-runtime,cli,validator-cli
 
+  cargo-deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+
   test:
     runs-on: ubuntu-latest
     steps:

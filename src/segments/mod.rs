@@ -1,4 +1,5 @@
 //! JBIG2 segment types and header parsing (spec clause 7).
+#![forbid(unsafe_code)]
 
 use std::ops::Index;
 

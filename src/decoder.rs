@@ -7,6 +7,7 @@
 //!
 //! The page is composited according to the page-info default pixel value +
 //! combination operator and the per-region combination operator.
+#![forbid(unsafe_code)]
 
 use std::borrow::Cow;
 use std::collections::HashMap;

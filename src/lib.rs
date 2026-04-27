@@ -81,6 +81,7 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 #![warn(missing_docs)]
+#![deny(unsafe_op_in_unsafe_fn)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 pub mod bitmap;

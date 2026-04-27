@@ -3,6 +3,7 @@
 //! The validator is deliberately separate from the decoder: it walks the
 //! wire format, builds a small structural tree, and runs clause-scoped checks
 //! without trying to reconstruct pixels.
+#![forbid(unsafe_code)]
 
 pub mod catalog;
 mod check;

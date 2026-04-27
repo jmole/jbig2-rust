@@ -15,6 +15,7 @@
 //! All geometry operations are done in terms of signed `i32` inside the JBIG2
 //! spec; we mirror that here to avoid accidental unsigned wraps when computing
 //! neighbourhood offsets.
+#![forbid(unsafe_code)]
 
 use crate::error::{Jbig2Error, Jbig2Result};
 use crate::segments::CombinationOp;
