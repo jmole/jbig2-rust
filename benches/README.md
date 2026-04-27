@@ -16,7 +16,7 @@ CARGO_HOME=./.cargo cargo bench --bench codec
 CARGO_HOME=./.cargo cargo bench --bench reference_codec
 ```
 
-Criterion's usual knobs apply, e.g. `-- --noplot` if you don't need the HTML reports. **Avoid `--quick` on `reference_codec`** — in Criterion 0.5 that flag skips persisting `estimates.json` and the HTML report entirely, which means the Rust rows in the cross-tool summary lose their Criterion timings. Use `-- --sample-size 10 --measurement-time 2 --warm-up-time 1` for a similarly fast run that still produces disk output.
+Criterion's usual knobs apply, e.g. `-- --noplot` if you don't need the HTML reports. **Avoid `--quick` on `reference_codec`** — in Criterion 0.5 that flag skips persisting `estimates.json` and the HTML report entirely, which means the cross-tool summary table below has nothing to read and degrades to `n/a` timings. Use `-- --sample-size 10 --measurement-time 2 --warm-up-time 1` for a similarly fast run that still produces disk output.
 
 ## `reference_codec` — what it measures
 
@@ -61,12 +61,7 @@ Full Criterion HTML report:
   file:///.../target/criterion/encode_reference/report/index.html
 ```
 
-The table's timing column is populated from two sources:
-
-- **`rust` rows** parse Criterion's own `target/criterion/<group>/rust/<case>/new/estimates.json` files, so they stay aligned with Criterion's regression tracking.
-- **External-tool rows** (`t88`, `jbig2enc`, `jbig2dec`) are sampled directly by the harness as informational wall-clock measurements and are not registered as Criterion benchmark IDs.
-
-Byte sizes and compression ratios are captured synchronously during each tool's correctness probe, so they appear even for tools whose timing source is missing.
+The table's timing column is populated by parsing Criterion's own `target/criterion/<group>/<tool>/<case>/new/estimates.json` files — the same numbers Criterion reports in its per-row output, just pivoted for comparison. Byte sizes and compression ratios are captured synchronously during each tool's correctness probe, so they appear even for tools whose `estimates.json` is missing (e.g. when a single tool was filtered out of this run).
 
 Resolution of the Criterion output directory mirrors Criterion's own logic: `$CRITERION_HOME`, then `$CARGO_TARGET_DIR/criterion`, then `./target/criterion`. This matters in sandboxed development environments where `CARGO_TARGET_DIR` is redirected outside the workspace.
 
@@ -84,7 +79,7 @@ Layout:
 - X-axis: one slot per case (`tt9_mmr`, `tt10_arith` / `tt9_page`, `tt10_page`).
 - Y-axis: throughput in MiB/s on a **log scale** — the dynamic range between rust (~400 MiB/s) and T.88 (~3 MiB/s) is ~140×, which a linear scale flattens into invisible slivers.
 - Bars grouped by case, colored by tool (rust = blue, `jbig2{enc,dec}` = orange, T.88 = purple), with absolute MiB/s values printed above each bar so log-scale distortion doesn't hide the number.
-- Tools that were skipped this run (missing binary, filtered out) don't appear in the legend — the chart surface matches what the harness actually measured.
+- Tools that were skipped this run (missing binary, filtered out) don't appear in the legend — the chart surface matches what Criterion actually measured.
 
 The SVG is plotted with `plotters` (a dev-dep we already pay for transitively via Criterion's plotting backend), so no extra tooling is required. Open the path printed to stderr in any browser.
 
@@ -115,7 +110,7 @@ make
 
 - `codec` end-to-end and micro groups — in-process decoder/encoder throughput for this crate.
 - `decode/reference/rust/*` and `encode/reference/rust/*` — direct apples-to-apples for the crate's public `Jbig2Decoder` / `Jbig2Encoder` API under the same page bytes throughput as the reference tools.
-- `decode/reference/{t88,jbig2dec}` and `encode/reference/{t88,jbig2enc}` — process-level times including startup. Useful as a sanity ceiling and wall-clock comparison context, not as a stopwatch of the reference's internal codec loop and not as tracked project regressions.
+- `decode/reference/{t88,jbig2dec}` and `encode/reference/{t88,jbig2enc}` — process-level times including startup. Useful as a sanity ceiling, not as a stopwatch of the reference's internal codec loop; process startup dominates small pages.
 
 ## Scratch layout
 

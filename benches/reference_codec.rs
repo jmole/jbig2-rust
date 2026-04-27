@@ -35,16 +35,14 @@
 //!
 //! * **Byte sizes** are recorded synchronously during the pre-benchmark
 //!   probe into [`ProbeRecord`] entries in [`probes()`].
-//! * **Rust timings** are recovered post-run by parsing Criterion's
-//!   `target/criterion/<group>/rust/<case>/new/estimates.json` files.
-//! * **External timings** are sampled directly by this harness so the
-//!   vendor tools stay in the comparison table without participating in
-//!   Criterion baseline/regression messaging.
+//! * **Timings** are recovered post-run by parsing Criterion's
+//!   `target/criterion/<group>/<tool>/<case>/new/estimates.json` files,
+//!   which is already the statistical source of truth for this bench.
 //!
-//! Criterion's default per-bench stdout is preserved for the crate's own
-//! `rust` rows, which are the tracked regression signal. External-tool
-//! rows in the additive summary table are wall-clock comparisons only and
-//! are not baseline-tracked.
+//! Criterion's default per-bench stdout is preserved unchanged — the
+//! table is additive and exists only because scanning 12+ sibling
+//! Criterion rows for "did rust beat jbig2enc?" is a bad UX for the
+//! deliverable of this bench target.
 
 use std::fs;
 use std::io::Cursor;
@@ -65,8 +63,8 @@ mod summary;
 mod charting;
 
 use common::*;
-use runners::{jbig2dec_cmd, jbig2enc_cmd, sample_subprocess, t88_decode_cmd, t88_encode_cmd};
-use summary::{ProbeRecord, print_summary, record, record_external_timing};
+use runners::{jbig2dec_cmd, jbig2enc_cmd, measure_subprocess, t88_decode_cmd, t88_encode_cmd};
+use summary::{ProbeRecord, print_summary, record};
 
 // ---------------------------------------------------------------------------
 // Corpus
@@ -155,10 +153,10 @@ fn bench_decode_comparison(c: &mut Criterion) {
 
         bench_rust_decode(&mut g, case, &jb2_path, &expected);
         if let Some(bin) = t88.as_deref() {
-            bench_t88_decode(case, &jb2_path, &expected, bin);
+            bench_t88_decode(&mut g, case, &jb2_path, &expected, bin);
         }
         if let Some(bin) = jbig2dec.as_deref() {
-            bench_jbig2dec_decode(case, &jb2_path, &expected, bin);
+            bench_jbig2dec_decode(&mut g, case, &jb2_path, &expected, bin);
         }
     }
 
@@ -199,6 +197,7 @@ fn bench_rust_decode(
 }
 
 fn bench_t88_decode(
+    g: &mut BenchmarkGroup<'_, WallTime>,
     case: &DecodeCase,
     jb2_path: &Path,
     expected: &Bitmap,
@@ -235,11 +234,13 @@ fn bench_t88_decode(
         raw_bytes: page_bytes(expected),
         compressed_bytes: fs::metadata(&staged_jb2).map(|m| m.len()).unwrap_or(0),
     });
-    let timing = sample_subprocess(|| t88_decode_cmd(bin, &input_stem, &out_stem));
-    record_external_timing("decode", "t88", case.tag, timing.mean_ns);
+    g.bench_function(BenchmarkId::new("t88", case.tag), |b| {
+        b.iter_custom(|iters| measure_subprocess(iters, || t88_decode_cmd(bin, &input_stem, &out_stem)))
+    });
 }
 
 fn bench_jbig2dec_decode(
+    g: &mut BenchmarkGroup<'_, WallTime>,
     case: &DecodeCase,
     jb2_path: &Path,
     expected: &Bitmap,
@@ -266,8 +267,9 @@ fn bench_jbig2dec_decode(
         compressed_bytes: fs::metadata(jb2_path).map(|m| m.len()).unwrap_or(0),
     });
     let input = jb2_path.to_path_buf();
-    let timing = sample_subprocess(|| jbig2dec_cmd(bin, &input, &out));
-    record_external_timing("decode", "jbig2dec", case.tag, timing.mean_ns);
+    g.bench_function(BenchmarkId::new("jbig2dec", case.tag), |b| {
+        b.iter_custom(|iters| measure_subprocess(iters, || jbig2dec_cmd(bin, &input, &out)))
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -303,10 +305,10 @@ fn bench_encode_comparison(c: &mut Criterion) {
 
         bench_rust_encode(&mut g, case, &source);
         if let Some(bin) = t88.as_deref() {
-            bench_t88_encode(case, &bmp_path, &source, bin);
+            bench_t88_encode(&mut g, case, &bmp_path, &source, bin);
         }
         if let Some(bin) = jbig2enc.as_deref() {
-            bench_jbig2enc_encode(case, &bmp_path, &source, bin);
+            bench_jbig2enc_encode(&mut g, case, &bmp_path, &source, bin);
         }
     }
 
@@ -352,6 +354,7 @@ fn bench_rust_encode(g: &mut BenchmarkGroup<'_, WallTime>, case: &EncodeCase, so
 }
 
 fn bench_t88_encode(
+    g: &mut BenchmarkGroup<'_, WallTime>,
     case: &EncodeCase,
     bmp_path: &Path,
     source: &Bitmap,
@@ -380,11 +383,17 @@ fn bench_t88_encode(
 
     let input_stem_owned: PathBuf = input_stem.clone();
     let out_stem_owned: PathBuf = out_stem.clone();
-    let timing = sample_subprocess(|| t88_encode_cmd(bin, &input_stem_owned, &out_stem_owned));
-    record_external_timing("encode", "t88", case.tag, timing.mean_ns);
+    g.bench_function(BenchmarkId::new("t88", case.tag), |b| {
+        b.iter_custom(|iters| {
+            measure_subprocess(iters, || {
+                t88_encode_cmd(bin, &input_stem_owned, &out_stem_owned)
+            })
+        })
+    });
 }
 
 fn bench_jbig2enc_encode(
+    g: &mut BenchmarkGroup<'_, WallTime>,
     case: &EncodeCase,
     bmp_path: &Path,
     source: &Bitmap,
@@ -407,8 +416,11 @@ fn bench_jbig2enc_encode(
 
     let input = bmp_path.to_path_buf();
     let out_owned = out.clone();
-    let timing = sample_subprocess(|| jbig2enc_cmd(bin, &input, &out_owned));
-    record_external_timing("encode", "jbig2enc", case.tag, timing.mean_ns);
+    g.bench_function(BenchmarkId::new("jbig2enc", case.tag), |b| {
+        b.iter_custom(|iters| {
+            measure_subprocess(iters, || jbig2enc_cmd(bin, &input, &out_owned))
+        })
+    });
 }
 
 criterion_group!(benches, bench_decode_comparison, bench_encode_comparison);
