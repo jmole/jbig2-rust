@@ -21,25 +21,66 @@ to crates.io (`publish = false`).
 
 | Spec area | Decoder | Encoder |
 | --- | --- | --- |
-| File header (D.4) and segment headers (7.2) | done | done |
-| Page information and end-of-page (7.4.8, 7.4.9) | done | done |
-| Generic region arithmetic, templates 0..3 (6.2.5) | done | done |
-| Generic region TPGD duplicate-line removal | done | done |
-| Generic region extended 12-AT template (AMD2) | done | done |
-| Generic region MMR (T.6) | done | done |
-| Symbol dictionary arithmetic (7.4.2) | done | done |
-| Symbol dictionary Huffman | done | deferred |
-| Text region arithmetic, no refinement (7.4.3) | done | done |
-| Text region Huffman and refinement | done | done |
-| Connected-component extraction and identity classifier | n/a | done |
-| Lossy classifier (WXOR, size-bucket acceleration) | n/a | done |
-| Generic refinement (6.3, 7.4.7) | done | done |
-| Pattern dictionary and halftone (7.4.4, 7.4.5) | done | done |
-| Colour palette (AMD3) | done | deferred |
+| File header (D.4) and segment headers (7.2) | ✅ | ✅ |
+| Page information and end-of-page (7.4.8, 7.4.9) | ✅ | ✅ |
+| Generic region arithmetic, templates 0..3 (6.2.5) | ✅ | ✅ |
+| Generic region TPGD duplicate-line removal | ✅ | ✅ |
+| Generic region extended 12-AT template (AMD2) | ✅ | ✅ |
+| Generic region MMR (T.6) | ✅ | ✅ |
+| Symbol dictionary arithmetic (7.4.2) | ✅ | ✅ |
+| Symbol dictionary Huffman | ✅ | [unsupported](#symbol-dictionary-huffman-encoder) |
+| Text region arithmetic, no refinement (7.4.3) | ✅ | ✅ |
+| Text region Huffman and refinement | ✅ | ✅ |
+| Connected-component extraction and identity classifier | n/a | ✅ |
+| Lossy classifier (WXOR, size-bucket acceleration) | n/a | ✅ |
+| Generic refinement (6.3, 7.4.7) | ✅ | ✅ |
+| Pattern dictionary and halftone (7.4.4, 7.4.5) | ✅ | ✅ |
+| Colour palette (AMD3) | ✅ | [unsupported](#colour-palette-amd3-encoder) |
 
 The decoder side covers the T.88 TT1..TT9 conformance streams exercised by the
 repository tests. Encoding still prefers the arithmetic paths for some features
 where the decoder accepts both arithmetic and Huffman variants.
+
+### Symbol dictionary Huffman encoder
+
+T.88 lets a symbol dictionary be coded with either MQ arithmetic or Huffman
+tables. The decoder accepts both (TT1..TT3 force the Huffman path), but an
+encoder only needs to pick one to produce a spec-correct stream. We emit the
+arithmetic variant via `Mode::SymbolLossless` because:
+
+- Arithmetic coding compresses better. Huffman SD coding exists in the
+  standard mainly for low-power fax hardware that can't afford arithmetic
+  coding, which doesn't apply here.
+- The decoder side already covers Huffman SD streams produced by other
+  encoders, so there is no interop gap to close.
+- A Huffman SD encoder would also need to grow user-defined Huffman table
+  emission and the Huffman + refinement/aggregation sub-modes (see
+  `src/segments/symbol_dictionary.rs`) for a path that is strictly worse than
+  what we already produce.
+
+### Colour palette (AMD3) encoder
+
+AMD3 is a narrow color extension to text regions: a small palette plus
+per-symbol-instance color indices. The decoder consumes AMD3 color text
+regions end-to-end (`src/segments/text_region.rs` returns an `RgbBitmap`),
+but the encoder cannot yet produce one. Reasons it is deferred rather than
+dropped:
+
+- AMD3 is not a generic RGB page mode. Useful inputs are limited to content
+  representable by a small palette; photographic or antialiased RGB is
+  inherently lossy under this model.
+- Encoding requires several new pipeline pieces: a palette quantizer, a
+  classifier that handles "same shape, different color" without exploding
+  the dictionary, and AMD3 extension emission alongside the text region.
+- Downstream consumer support is patchy — for example `jbig2dec` prints
+  `page segment indicates use of color segments (NYI)` (see
+  `docs/known-conformance-issues.md`).
+- Color decode is already protected by a regression: `Param8.ini /
+  codeStreamTest3` runs ITU's encoder over color input and round-trips
+  RGB-to-RGB through `Jbig2Decoder` (see
+  `docs/conformance-matrix-encode-audit.md`).
+
+The forward plan lives in `docs/color-encoder-roadmap.md`.
 
 ## Correctness Evidence
 
@@ -83,7 +124,7 @@ For private reports, see `SECURITY.md`.
 - `conformance-tools`: build the conformance matrix tooling.
 - `sandbox-runtime` (default): enable the external-process sandbox support.
 
-MSRV is Rust 1.75. The license is `MIT OR Apache-2.0`.
+MSRV is Rust 1.75. The license is `MIT` (see `LICENSE`).
 
 ## Example
 
@@ -117,3 +158,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - `docs/05-external-decoder-taxonomy.md`: external decoder taxonomy.
 - `docs/known-conformance-issues.md`: known conformance gaps.
 - `docs/validator-reference.md`: structural validator reference.
+
+## License
+
+Licensed under the MIT license ([LICENSE](LICENSE) or
+http://opensource.org/licenses/MIT).
+
+### Contribution
+
+Unless you explicitly state otherwise, any contribution intentionally submitted
+for inclusion in the work by you shall be licensed under the MIT license,
+without any additional terms or conditions.
