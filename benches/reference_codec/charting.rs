@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use plotters::coord::Shift;
 use plotters::prelude::*;
 
-use super::summary::{ProbeRecord, criterion_output_dir, timing_for};
+use super::summary::{ProbeRecord, criterion_output_dir, estimates_path, parse_mean_ns};
 use super::{DECODE_CASES, ENCODE_CASES};
 
 fn tool_color(tool: &str) -> RGBColor {
@@ -22,8 +22,8 @@ pub(crate) fn render_comparison_chart(
 ) -> Result<Option<PathBuf>, Box<dyn std::error::Error>> {
     let mut data: BTreeMap<(&'static str, &'static str, &'static str), f64> = BTreeMap::new();
     for r in records {
-        if let Some(timing) = timing_for(r.side, r.tool, r.case) {
-            let ns = timing.mean_ns;
+        let est = estimates_path(r.side, r.tool, r.case);
+        if let Some(ns) = parse_mean_ns(&est) {
             if ns > 0.0 && r.raw_bytes > 0 {
                 let mib = (r.raw_bytes as f64) / (ns / 1e9) / (1024.0 * 1024.0);
                 data.insert((r.side, r.case, r.tool), mib);
@@ -43,7 +43,7 @@ pub(crate) fn render_comparison_chart(
         let root = SVGBackend::new(&out_path, (1200, 900)).into_drawing_area();
         root.fill(&WHITE)?;
         let root = root.titled(
-            "Reference codec throughput comparison (rust tracked, external informational)",
+            "Reference codec throughput comparison (higher is better)",
             ("sans-serif", 26),
         )?;
 
