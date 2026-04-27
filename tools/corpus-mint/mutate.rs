@@ -15,6 +15,7 @@ use std::fs;
 use std::path::Path;
 
 use anyhow::{Context, Result};
+use jbig2::validator::corpus::Expected;
 use jbig2::validator::{validate, Lens};
 use sha2::{Digest, Sha256};
 
@@ -105,19 +106,16 @@ pub fn run(root: &Path) -> Result<()> {
                     case.mutation,
                 );
                 fs::write(dir.join("meta.toml"), meta)?;
-                let ids = report
+                let check_ids = report
                     .findings
                     .iter()
-                    .map(|f| format!("{:?}", f.check_id.as_str()))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                fs::write(
-                    dir.join("expected.toml"),
-                    format!(
-                        "primary_check_id = {:?}\ncheck_ids = [{}]\n",
-                        primary_id, ids
-                    ),
-                )?;
+                    .map(|f| f.check_id.as_str().to_string())
+                    .collect::<Vec<_>>();
+                Expected::validator(primary_id.clone(), check_ids)
+                    .write(&dir.join("expected.toml"))
+                    .with_context(|| {
+                        format!("write expected metadata for {}", dir.display())
+                    })?;
             }
 
             index.push_str(&format!(

@@ -1,2 +1,5 @@
+shape = "validator-fixture"
+
+[validator]
 primary_check_id = "T88-7.3.2-001"
 check_ids = ["T88-7.3.2-001"]

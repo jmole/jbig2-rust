@@ -1,0 +1,16 @@
+shape = "decoder-fixture"
+
+[decoder.rust]
+verdict = "RejectErr"
+not = ["panic", "oom"]
+note = "Baselined 2026-04: rejects on unknown segment type. Bug describes integer overflow in jbig2_arith_int_decode; rust decoder bails before reaching the arithmetic decoder."
+baseline_signature = "exit=1; jbig2-decode: Jbig2Decoder::new failed: invalid segment header: unknown segment type"
+
+[decoder.jbig2dec]
+verdict = "Unknown"
+upstream_status_at_baseline = "UNCONFIRMED"
+note = "Pending baseline against vendor jbig2dec build."
+
+[decoder.itu_t88]
+verdict = "Unknown"
+note = "Pending baseline against ITU sample decoder."

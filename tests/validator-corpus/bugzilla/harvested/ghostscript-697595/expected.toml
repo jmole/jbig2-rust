@@ -1,0 +1,16 @@
+shape = "decoder-fixture"
+
+[decoder.rust]
+verdict = "RejectErr"
+not = ["panic", "oom"]
+note = "Baselined 2026-04: rejects via `page not found` during decode_page(1). Same attachment SHA as 696453."
+baseline_signature = "exit=1; jbig2-decode: decode_page(1) failed: unsupported feature: page not found"
+
+[decoder.jbig2dec]
+verdict = "Unknown"
+upstream_status_at_baseline = "RESOLVED WORKSFORME"
+note = "Pending baseline against vendor jbig2dec build."
+
+[decoder.itu_t88]
+verdict = "Unknown"
+note = "Pending baseline against ITU sample decoder."

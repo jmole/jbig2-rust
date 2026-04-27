@@ -37,7 +37,8 @@ fn render() -> String {
     out.push_str("- `synthetic/<clause>-<short-name>/` — hand-crafted streams produced by `tools/corpus-mint`. Each fixture targets exactly one CheckId.\n");
     out.push_str("- `annex-h-bitflip/bucket-<severity>-<id>-<seg-type>/byte-NNNN-bit-N/` — exhaustive single-bit-flip sweep over the canonical Annex H stream.\n");
     out.push_str("- `mutated/annex-h/<schedule>/...` — deterministic, seed-driven mutation cases (bit-flip, byte-replace, dlen-perturb).\n");
-    out.push_str("- `bugzilla/ghostscript-<bug-id>/` — third-party JBIG2 streams harvested from `bugs.ghostscript.com`. `expected.toml` uses `primary_check_id = \"unknown\"` until a maintainer hand-classifies the bug; the regression test only requires the validator to terminate without panicking on these fixtures.\n\n");
+    out.push_str("- `bugzilla/harvested/ghostscript-<bug-id>/` — third-party JBIG2 streams harvested from `bugs.ghostscript.com` (one `stream.jb2` per directory). `expected.toml` uses `shape = \"decoder-fixture\"` with one `[decoder.<impl>]` block per implementation; the contract is enforced by `corpus-validator --strict`, not by the in-process validator regression test, which on these fixtures only requires that the validator terminate without panicking.\n");
+    out.push_str("- `bugzilla/tracked/ghostscript-<bug-id>/` — bugs whose attachment was a PDF, zip, or other container we deliberately do not extract here. The directory holds only `meta.toml`; it is documentation, not regression coverage.\n\n");
     out.push_str("## Catalog\n\n");
     out.push_str("| CheckId | Default severity | Spec clause | Citation |\n|---|---|---|---|\n");
     for check in catalog_checks() {

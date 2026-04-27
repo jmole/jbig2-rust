@@ -1,15 +1,32 @@
-//! Corpus runner: runs the validator (and optionally a sandboxed C decoder)
-//! over every fixture under `tests/validator-corpus/` and produces
-//! `target/corpus-report.md`.
+//! Corpus runner: runs the validator and the configured set of sandboxed
+//! decoders (`jbig2-rust` always, `jbig2dec` and the ITU sample decoder
+//! opt-in via `--with-c-decoders`) over every fixture under
+//! `tests/validator-corpus/`.
 //!
-//! Hard rules:
+//! Three operating modes:
+//!
+//! * Default — produces `target/corpus-report.md` with a per-fixture
+//!   per-implementation matrix. Informational; non-zero exit only on
+//!   validator-internal errors.
+//! * `--baseline <path>` — same fixture sweep, but writes the observed
+//!   per-impl `Verdict` to `<path>` so a maintainer can hand-review each
+//!   cell and merge the result back into per-fixture `expected.toml`. This
+//!   is the entry point for slice 3 of the decoder-conformance plan.
+//! * `--strict` — same fixture sweep, exits non-zero if any cell
+//!   mismatches the per-impl `[decoder.<impl>].verdict` recorded in
+//!   `expected.toml`. This is the regression entry point that
+//!   `tests/corpus_validator_strict.rs` and CI invoke.
+//!
+//! Hard rules kept from the original design:
 //!   * Validator runs are pure Rust and always happen.
-//!   * Sandboxed C-decoder runs are opt-in via `--with-c-decoders`.
-//!   * Sandboxed runs only happen against fixtures the validator already
-//!     marked invalid, so we never feed a clean input back to the C tools just
-//!     to watch them crash.
-//!   * Every C-decoder invocation goes through `tools/sandbox` so we never
-//!     escape into the host environment.
+//!   * Sandboxed C-decoder runs are opt-in via `--with-c-decoders` and are
+//!     only forwarded to fixtures the validator already marked invalid.
+//!   * `jbig2-rust` runs only against fixtures whose `expected.toml` shape
+//!     is `decoder-fixture` or `both`, so we do not pay decoder cost on the
+//!     hundreds of synthetic / annex-h-bitflip fixtures whose contract is
+//!     validator-only.
+//!   * Every external invocation goes through `jbig2::util::sandbox` so we
+//!     never escape into the host environment.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -20,6 +37,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use clap::Parser;
 use jbig2::util::sandbox::{KillReason, Sandbox, SandboxOutcome};
+use jbig2::validator::corpus::{Expected, Shape, Verdict};
 use jbig2::validator::{validate, Lens, Report};
 use sha2::{Digest, Sha256};
 
@@ -27,10 +45,11 @@ const CORPUS_RELATIVE: &str = "tests/validator-corpus";
 const REPORT_RELATIVE: &str = "target/corpus-report.md";
 const PER_TOOL_BUDGET_SECS: u64 = 600;
 const PER_TOOL_INVALID_CAP: usize = 256;
+const RUST_DECODER_BINARY: &str = "target/release/jbig2-decode";
 
 #[derive(Parser, Debug)]
 #[command(name = "corpus-validator")]
-#[command(about = "Run the T.88 validator (and optional sandboxed C decoders) over the corpus")]
+#[command(about = "Run the T.88 validator and sandboxed decoders over the corpus")]
 struct Args {
     /// Glob-style filter on fixture path (substring match).
     #[arg(long)]
@@ -38,9 +57,17 @@ struct Args {
     /// Conformance lens to apply.
     #[arg(long, value_enum, default_value_t = LensArg::StrictT88)]
     lens: LensArg,
-    /// Also run sandboxed C decoders against validator-invalid fixtures.
+    /// Also run sandboxed C decoders (`jbig2dec`, ITU sample decoder)
+    /// against validator-invalid fixtures.
     #[arg(long, default_value_t = false)]
     with_c_decoders: bool,
+    /// Disable the `jbig2-rust` row even when the binary is present.
+    #[arg(long, default_value_t = false)]
+    without_rust: bool,
+    /// Path to the `jbig2-decode` rust child binary (overrides the
+    /// auto-detected `target/release/jbig2-decode`).
+    #[arg(long)]
+    rust_decoder: Option<PathBuf>,
     /// Path to `jbig2dec` (overrides auto-detected vendor build).
     #[arg(long)]
     jbig2dec: Option<PathBuf>,
@@ -50,12 +77,24 @@ struct Args {
     /// Output report path (defaults to `target/corpus-report.md`).
     #[arg(long)]
     report: Option<PathBuf>,
-    /// Maximum walltime for each C decoder in seconds.
+    /// Maximum walltime for each decoder in seconds.
     #[arg(long, default_value_t = PER_TOOL_BUDGET_SECS)]
     per_tool_budget_secs: u64,
-    /// Maximum number of validator-invalid fixtures forwarded to each C tool.
+    /// Maximum number of validator-invalid fixtures forwarded to each C
+    /// tool (does not apply to the `jbig2-rust` row, which is bounded by
+    /// the count of decoder-fixture shaped fixtures).
     #[arg(long, default_value_t = PER_TOOL_INVALID_CAP)]
     per_tool_invalid_cap: usize,
+    /// Emit observed per-impl `Verdict` per fixture to the given path
+    /// instead of running the report. The maintainer hand-reviews each
+    /// cell and merges the reviewed verdicts into the corresponding
+    /// `expected.toml`.
+    #[arg(long)]
+    baseline: Option<PathBuf>,
+    /// Compare each cell against the recorded `expected.toml` and exit
+    /// non-zero on mismatch. This is the regression entry point.
+    #[arg(long, default_value_t = false)]
+    strict: bool,
 }
 
 #[derive(Clone, Copy, Debug, clap::ValueEnum)]
@@ -93,23 +132,63 @@ fn main() -> Result<()> {
         corpus_root.display()
     );
 
+    let decoders = resolve_decoders(&root, &args);
+    eprintln!(
+        "corpus-validator: configured decoders: {}",
+        decoders
+            .iter()
+            .map(|d| d.name.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+
+    let sandbox = Sandbox::for_decoder()
+        .ro_path(corpus_root.clone())
+        .ro_path(root.join("vendor"))
+        .ro_path(root.join("target"))
+        .rw_path(PathBuf::from("/tmp"));
+
     let mut report = CorpusReport::new(args.lens.into());
     for fixture in &fixtures {
         let bytes = fs::read(&fixture.stream_path)
             .with_context(|| format!("read {}", fixture.stream_path.display()))?;
         let validator_report = validate(&bytes, args.lens.into());
-        report.record_validator(&fixture.relative, &validator_report);
+        let expected = read_expected_for(&fixture.expected_path);
+        report.record_fixture(fixture, &validator_report, expected);
     }
 
-    if args.with_c_decoders {
-        let decoders = resolve_decoders(&root, &args);
-        let sandbox = Sandbox::for_decoder()
-            .ro_path(corpus_root.clone())
-            .ro_path(root.join("vendor"))
-            .rw_path(PathBuf::from("/tmp"));
-        for decoder in &decoders {
+    let invalid_count = report.fixtures.iter().filter(|f| f.invalid).count();
+    let decoder_fixture_count = report
+        .fixtures
+        .iter()
+        .filter(|f| f.runs_decoder_row())
+        .count();
+
+    for decoder in &decoders {
+        if decoder.always_run_decoder_fixtures {
+            run_decoder_against_decoder_fixtures(&sandbox, decoder, &fixtures, &mut report, &args)?;
+        }
+        if decoder.run_against_validator_invalid {
             run_decoder_for_invalid(&sandbox, decoder, &fixtures, &mut report, &args)?;
         }
+    }
+
+    eprintln!(
+        "corpus-validator: validator-invalid={invalid_count}, decoder-fixture-rows={decoder_fixture_count}"
+    );
+
+    if let Some(baseline_path) = args.baseline.as_ref() {
+        if let Some(parent) = baseline_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let body = report.render_baseline_toml();
+        fs::write(baseline_path, body)
+            .with_context(|| format!("write baseline {}", baseline_path.display()))?;
+        eprintln!(
+            "corpus-validator: wrote baseline {}",
+            baseline_path.display()
+        );
+        return Ok(());
     }
 
     if let Some(parent) = report_path.parent() {
@@ -118,6 +197,23 @@ fn main() -> Result<()> {
     fs::write(&report_path, report.render_markdown())
         .with_context(|| format!("write report {}", report_path.display()))?;
     eprintln!("corpus-validator: wrote {}", report_path.display());
+
+    if args.strict {
+        let configured: std::collections::BTreeSet<String> =
+            decoders.iter().map(|d| d.name.to_string()).collect();
+        let mismatches = report.collect_strict_mismatches(&configured);
+        if !mismatches.is_empty() {
+            eprintln!(
+                "corpus-validator --strict: {} expectation mismatch(es):",
+                mismatches.len()
+            );
+            for m in &mismatches {
+                eprintln!("  {m}");
+            }
+            std::process::exit(3);
+        }
+        eprintln!("corpus-validator --strict: all cells match recorded expectations");
+    }
 
     if report.has_validator_unexpected() {
         std::process::exit(2);
@@ -129,6 +225,7 @@ fn main() -> Result<()> {
 struct Fixture {
     relative: String,
     stream_path: PathBuf,
+    expected_path: PathBuf,
 }
 
 fn collect_fixtures(root: &Path, filter: Option<&str>) -> Result<Vec<Fixture>> {
@@ -159,13 +256,28 @@ fn visit(root: &Path, dir: &Path, out: &mut Vec<Fixture>, filter: Option<&str>) 
                     continue;
                 }
             }
+            let expected_path = parent.join("expected.toml");
             out.push(Fixture {
                 relative,
                 stream_path: path,
+                expected_path,
             });
         }
     }
     Ok(())
+}
+
+fn read_expected_for(path: &Path) -> Option<Expected> {
+    if !path.exists() {
+        return None;
+    }
+    match Expected::read(path) {
+        Ok(e) => Some(e),
+        Err(err) => {
+            eprintln!("corpus-validator: skipping malformed expected.toml ({err})");
+            None
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -173,35 +285,72 @@ struct DecoderConfig {
     name: &'static str,
     binary: PathBuf,
     args_template: fn(&Path) -> Vec<String>,
+    /// Run against every fixture whose shape is `decoder-fixture` or
+    /// `both`, regardless of validator outcome. The `jbig2-rust` row uses
+    /// this; C decoders do not, so we never feed a clean input back to
+    /// `jbig2dec` just to watch it crash.
+    always_run_decoder_fixtures: bool,
+    /// Run against validator-invalid fixtures (existing behaviour).
+    run_against_validator_invalid: bool,
 }
 
 fn resolve_decoders(root: &Path, args: &Args) -> Vec<DecoderConfig> {
     let mut out = Vec::new();
-    if let Some(path) = args
-        .jbig2dec
-        .clone()
-        .or_else(|| candidate_path(&root.join("vendor/jbig2dec/jbig2dec")))
-    {
-        out.push(DecoderConfig {
-            name: "jbig2dec",
-            binary: path,
-            args_template: jbig2dec_args,
-        });
+    if !args.without_rust {
+        if let Some(path) = args
+            .rust_decoder
+            .clone()
+            .or_else(|| candidate_path(&root.join(RUST_DECODER_BINARY)))
+        {
+            out.push(DecoderConfig {
+                name: "rust",
+                binary: path,
+                args_template: rust_args,
+                always_run_decoder_fixtures: true,
+                run_against_validator_invalid: false,
+            });
+        } else {
+            eprintln!(
+                "corpus-validator: jbig2-rust row disabled: {} not present (build with `cargo build --release --bin jbig2-decode`)",
+                root.join(RUST_DECODER_BINARY).display()
+            );
+        }
     }
-    if let Some(path) =
-        args.itu_jbig2.clone().or_else(|| {
-            candidate_path(&root.join(
-                "vendor/T-REC-T.88-201808/Software/JBIG2_SampleSoftware-A20180829/source/jbig2",
-            ))
-        })
-    {
-        out.push(DecoderConfig {
-            name: "itu-jbig2",
-            binary: path,
-            args_template: itu_jbig2_args,
-        });
+    if args.with_c_decoders {
+        if let Some(path) = args
+            .jbig2dec
+            .clone()
+            .or_else(|| candidate_path(&root.join("vendor/jbig2dec/jbig2dec")))
+        {
+            out.push(DecoderConfig {
+                name: "jbig2dec",
+                binary: path,
+                args_template: jbig2dec_args,
+                always_run_decoder_fixtures: false,
+                run_against_validator_invalid: true,
+            });
+        }
+        if let Some(path) =
+            args.itu_jbig2.clone().or_else(|| {
+                candidate_path(&root.join(
+                    "vendor/T-REC-T.88-201808/Software/JBIG2_SampleSoftware-A20180829/source/jbig2",
+                ))
+            })
+        {
+            out.push(DecoderConfig {
+                name: "itu_t88",
+                binary: path,
+                args_template: itu_jbig2_args,
+                always_run_decoder_fixtures: false,
+                run_against_validator_invalid: true,
+            });
+        }
     }
     out
+}
+
+fn rust_args(stream: &Path) -> Vec<String> {
+    vec![stream.display().to_string()]
 }
 
 fn jbig2dec_args(stream: &Path) -> Vec<String> {
@@ -245,6 +394,7 @@ fn run_decoder_for_invalid(
     let invalid: Vec<&Fixture> = fixtures
         .iter()
         .filter(|f| report.invalid_relative(&f.relative))
+        .filter(|f| !report.already_ran(decoder.name, &f.relative))
         .take(args.per_tool_invalid_cap)
         .collect();
     eprintln!(
@@ -253,11 +403,41 @@ fn run_decoder_for_invalid(
         decoder.name
     );
 
+    drive_decoder(sandbox, decoder, &invalid, report, args)
+}
+
+fn run_decoder_against_decoder_fixtures(
+    sandbox: &Sandbox,
+    decoder: &DecoderConfig,
+    fixtures: &[Fixture],
+    report: &mut CorpusReport,
+    args: &Args,
+) -> Result<()> {
+    let targets: Vec<&Fixture> = fixtures
+        .iter()
+        .filter(|f| report.runs_decoder_row_for(&f.relative))
+        .filter(|f| !report.already_ran(decoder.name, &f.relative))
+        .collect();
+    eprintln!(
+        "corpus-validator: forwarding {} decoder-fixture-shaped fixtures to {}",
+        targets.len(),
+        decoder.name
+    );
+    drive_decoder(sandbox, decoder, &targets, report, args)
+}
+
+fn drive_decoder(
+    sandbox: &Sandbox,
+    decoder: &DecoderConfig,
+    targets: &[&Fixture],
+    report: &mut CorpusReport,
+    args: &Args,
+) -> Result<()> {
     let budget = Duration::from_secs(args.per_tool_budget_secs);
     let started = Instant::now();
     let mut over_budget = false;
 
-    for fixture in invalid {
+    for fixture in targets {
         if started.elapsed() >= budget {
             over_budget = true;
             break;
@@ -355,6 +535,23 @@ impl DecoderOutcome {
         }
     }
 
+    /// Distil the classification into a `Verdict` the per-fixture
+    /// `[decoder.<impl>]` block can record. Two distinct crash signals
+    /// (SIGSEGV vs SIGABRT) both fold into `Verdict::Crash`; the
+    /// classification + signature still surface as evidence in the report
+    /// when the verdict mismatches expectations.
+    fn verdict(&self) -> Verdict {
+        match self {
+            Self::Ok => Verdict::Ok,
+            Self::NonZeroExit { .. } => Verdict::RejectErr,
+            Self::SanitizerHit { .. } | Self::Crash { .. } => Verdict::Crash,
+            Self::Timeout => Verdict::Timeout,
+            // Spawn errors are harness bugs, not decoder verdicts. Leave
+            // the cell `Unknown` so the maintainer notices.
+            Self::SpawnError(_) => Verdict::Unknown,
+        }
+    }
+
     fn signature(&self) -> Option<&str> {
         match self {
             Self::SanitizerHit { signature } => Some(signature.as_str()),
@@ -378,7 +575,7 @@ fn sanitizer_signature(stderr: &str) -> Option<String> {
         if let Some(idx) = stderr.find(needle) {
             let after = &stderr[idx..];
             let line = after.lines().next().unwrap_or("");
-            return Some(format!("{}", line.trim()));
+            return Some(line.trim().to_string());
         }
     }
     None
@@ -422,9 +619,14 @@ impl CorpusReport {
         }
     }
 
-    fn record_validator(&mut self, relative: &str, report: &Report) {
+    fn record_fixture(
+        &mut self,
+        fixture: &Fixture,
+        report: &Report,
+        expected: Option<Expected>,
+    ) {
         let entry = FixtureReport {
-            relative: relative.to_string(),
+            relative: fixture.relative.clone(),
             invalid: report.is_invalid(),
             findings_count: report.findings.len(),
             primary_check_id: report
@@ -433,7 +635,8 @@ impl CorpusReport {
                 .find(|f| f.severity == jbig2::validator::Severity::Error)
                 .or_else(|| report.findings.first())
                 .map(|f| f.check_id.as_str().to_string()),
-            decoder_outcomes: BTreeMap::new(),
+            decoder_runs: BTreeMap::new(),
+            expected,
         };
         self.fixtures.push(entry);
     }
@@ -446,13 +649,35 @@ impl CorpusReport {
             .unwrap_or(false)
     }
 
+    fn runs_decoder_row_for(&self, relative: &str) -> bool {
+        self.fixtures
+            .iter()
+            .find(|f| f.relative == relative)
+            .map(|f| f.runs_decoder_row())
+            .unwrap_or(false)
+    }
+
+    fn already_ran(&self, decoder: &str, relative: &str) -> bool {
+        self.fixtures
+            .iter()
+            .find(|f| f.relative == relative)
+            .map(|f| f.decoder_runs.contains_key(decoder))
+            .unwrap_or(false)
+    }
+
     fn record_decoder(&mut self, name: &str, relative: &str, outcome: DecoderOutcome) {
         let classification = outcome.classification();
         let signature = outcome.signature().map(|s| s.to_string());
+        let verdict = outcome.verdict();
         if let Some(fixture) = self.fixtures.iter_mut().find(|f| f.relative == relative) {
-            fixture
-                .decoder_outcomes
-                .insert(name.to_string(), classification.to_string());
+            fixture.decoder_runs.insert(
+                name.to_string(),
+                DecoderRunRecord {
+                    verdict,
+                    classification: classification.to_string(),
+                    signature: signature.clone(),
+                },
+            );
         }
         let rollup = self.decoders.entry(name.to_string()).or_default();
         rollup.total += 1;
@@ -478,6 +703,40 @@ impl CorpusReport {
         false
     }
 
+    /// Emit `target/baseline.toml`-style document grouping observed
+    /// verdicts by fixture. The maintainer reviews each cell and copies
+    /// the reviewed verdict back into the corresponding `expected.toml`.
+    fn render_baseline_toml(&self) -> String {
+        let mut out = String::new();
+        out.push_str(
+            "# corpus-validator baseline.\n\
+             # Hand-review each cell, then merge into the relevant\n\
+             # `expected.toml::[decoder.<impl>]`. Verdict = Unknown means\n\
+             # the harness did not run that impl on that fixture (binary\n\
+             # missing or shape did not require it).\n\n",
+        );
+        for f in &self.fixtures {
+            if !f.runs_decoder_row() {
+                continue;
+            }
+            out.push_str(&format!("[fixture.{:?}]\n", f.relative));
+            for (impl_name, run) in &f.decoder_runs {
+                out.push_str(&format!(
+                    "{}_verdict = {:?}\n{}_classification = {:?}\n",
+                    impl_name,
+                    run.verdict.as_str(),
+                    impl_name,
+                    run.classification,
+                ));
+                if let Some(sig) = run.signature.as_ref() {
+                    out.push_str(&format!("{}_signature = {:?}\n", impl_name, sig));
+                }
+            }
+            out.push('\n');
+        }
+        out
+    }
+
     fn render_markdown(&self) -> String {
         let mut out = String::new();
         out.push_str(&format!("# Corpus report (lens = {:?})\n\n", self.lens));
@@ -498,8 +757,36 @@ impl CorpusReport {
             ));
         }
 
+        // Per-fixture per-impl matrix, restricted to fixtures whose shape
+        // requires decoder-row coverage. Cells render as
+        // `verdict[expected:<vY>]` so a single mismatching cell pops out.
+        let decoder_rows: Vec<&FixtureReport> =
+            self.fixtures.iter().filter(|f| f.runs_decoder_row()).collect();
+        if !decoder_rows.is_empty() {
+            let impls = self.observed_decoder_names();
+            out.push_str("\n## Per-fixture decoder matrix\n\n");
+            out.push_str("Cell legend: `<observed>[exp=<expected>]` — `match` if observed equals expected, `MISMATCH` otherwise.\n\n");
+            out.push_str("| Fixture |");
+            for name in &impls {
+                out.push_str(&format!(" {} |", name));
+            }
+            out.push('\n');
+            out.push_str("|---|");
+            for _ in &impls {
+                out.push_str("---|");
+            }
+            out.push('\n');
+            for f in &decoder_rows {
+                out.push_str(&format!("| `{}` |", f.relative));
+                for name in &impls {
+                    out.push_str(&format!(" {} |", f.cell_for(name)));
+                }
+                out.push('\n');
+            }
+        }
+
         if !self.decoders.is_empty() {
-            out.push_str("\n## Sandboxed C decoders\n\n");
+            out.push_str("\n## Decoder rollups\n\n");
             for (name, rollup) in &self.decoders {
                 out.push_str(&format!("### {}\n\n", name));
                 out.push_str(&format!(
@@ -533,6 +820,78 @@ impl CorpusReport {
         }
         out
     }
+
+    fn observed_decoder_names(&self) -> Vec<String> {
+        let mut set: std::collections::BTreeSet<String> =
+            self.decoders.keys().cloned().collect();
+        for f in &self.fixtures {
+            for k in f.decoder_runs.keys() {
+                set.insert(k.clone());
+            }
+        }
+        // Also include implementations that have an [decoder.<impl>] block
+        // in expected.toml even if we didn't observe them this run; the
+        // matrix should still surface that cell as `Unknown[exp=...]`.
+        for f in &self.fixtures {
+            if let Some(expected) = f.expected.as_ref() {
+                for k in expected.decoder.keys() {
+                    set.insert(k.clone());
+                }
+            }
+        }
+        set.into_iter().collect()
+    }
+
+    /// Walk every fixture that runs a decoder row. For each impl with a
+    /// recorded `expected.toml::decoder.<impl>.verdict` that is not
+    /// `Unknown`, produce a one-line mismatch description if observed
+    /// disagrees. Returned in stable fixture order so CI logs diff cleanly.
+    ///
+    /// `configured_impls` is the set of decoder names that were configured
+    /// for this run. Cells whose impl was not configured are skipped: a
+    /// strict run only enforces expectations for the impls it actually has
+    /// the binary for. CI is responsible for choosing which impls to
+    /// configure (e.g. via `--with-c-decoders`); local `cargo test` runs
+    /// only check the impls available without extra setup.
+    fn collect_strict_mismatches(
+        &self,
+        configured_impls: &std::collections::BTreeSet<String>,
+    ) -> Vec<String> {
+        let mut out = Vec::new();
+        for f in &self.fixtures {
+            if !f.runs_decoder_row() {
+                continue;
+            }
+            let Some(expected) = f.expected.as_ref() else {
+                continue;
+            };
+            for (name, exp) in &expected.decoder {
+                if exp.verdict == Verdict::Unknown {
+                    continue;
+                }
+                if !configured_impls.contains(name) {
+                    continue;
+                }
+                let observed = f
+                    .decoder_runs
+                    .get(name)
+                    .map(|r| r.verdict)
+                    .unwrap_or(Verdict::Unknown);
+                if observed != exp.verdict {
+                    let signature = f
+                        .decoder_runs
+                        .get(name)
+                        .and_then(|r| r.signature.clone())
+                        .unwrap_or_else(|| "<no signature>".into());
+                    out.push(format!(
+                        "{} :: {} :: expected={} observed={} :: {}",
+                        f.relative, name, exp.verdict, observed, signature
+                    ));
+                }
+            }
+        }
+        out
+    }
 }
 
 #[derive(Default)]
@@ -553,8 +912,46 @@ struct FixtureReport {
     invalid: bool,
     findings_count: usize,
     primary_check_id: Option<String>,
-    #[allow(dead_code)]
-    decoder_outcomes: BTreeMap<String, String>,
+    decoder_runs: BTreeMap<String, DecoderRunRecord>,
+    expected: Option<Expected>,
+}
+
+impl FixtureReport {
+    /// Whether this fixture's shape requires the per-impl decoder row.
+    fn runs_decoder_row(&self) -> bool {
+        matches!(
+            self.expected.as_ref().map(|e| e.shape),
+            Some(Shape::DecoderFixture) | Some(Shape::Both)
+        )
+    }
+
+    fn cell_for(&self, impl_name: &str) -> String {
+        let observed = self
+            .decoder_runs
+            .get(impl_name)
+            .map(|r| r.verdict)
+            .unwrap_or(Verdict::Unknown);
+        let expected = self
+            .expected
+            .as_ref()
+            .and_then(|e| e.decoder.get(impl_name))
+            .map(|exp| exp.verdict)
+            .unwrap_or(Verdict::Unknown);
+        if expected == Verdict::Unknown {
+            format!("`{}[exp=Unknown]`", observed)
+        } else if observed == expected {
+            format!("`{}` ✓", observed)
+        } else {
+            format!("`{}[exp={}]` MISMATCH", observed, expected)
+        }
+    }
+}
+
+#[derive(Debug)]
+struct DecoderRunRecord {
+    verdict: Verdict,
+    classification: String,
+    signature: Option<String>,
 }
 
 #[allow(dead_code)]

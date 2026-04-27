@@ -1,2 +1,9 @@
+shape = "validator-fixture"
+
+[validator]
 primary_check_id = "T88-7.2.7-001"
-check_ids = ["T88-7.2.7-001", "T88-7.4.2-002", "T88-PARSE-001"]
+check_ids = [
+    "T88-7.2.7-001",
+    "T88-7.4.2-002",
+    "T88-PARSE-001",
+]

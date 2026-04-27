@@ -5,6 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use jbig2::validator::corpus::Expected;
 use jbig2::validator::{validate, Lens};
 
 fn main() -> Result<()> {
@@ -114,20 +115,14 @@ pub(crate) fn write_fixture(
         ),
     )?;
     let report = validate(stream, Lens::StrictT88);
-    let ids = report
+    let check_ids = report
         .findings
         .iter()
-        .map(|finding| format!("{:?}", finding.check_id.as_str()))
-        .collect::<Vec<_>>()
-        .join(", ");
-    fs::write(
-        dir.join("expected.toml"),
-        format!(
-            "primary_check_id = {:?}\ncheck_ids = [{}]\n",
-            primary_check_id, ids
-        ),
-    )
-    .with_context(|| format!("write expected metadata for {}", dir.display()))?;
+        .map(|finding| finding.check_id.as_str().to_string())
+        .collect::<Vec<_>>();
+    Expected::validator(primary_check_id, check_ids)
+        .write(&dir.join("expected.toml"))
+        .with_context(|| format!("write expected metadata for {}", dir.display()))?;
     Ok(())
 }
 

@@ -1,11 +1,15 @@
 //! End-to-end regression test over `tests/validator-corpus/`.
 //!
 //! For every fixture (`stream.jb2` + `expected.toml`) we re-run the validator
-//! under the strict T.88 lens and assert that:
+//! under the strict T.88 lens. Behaviour depends on the fixture's `shape`:
 //!
-//! * the recorded `primary_check_id` is one of the findings (or the fixture
-//!   is marked `clean` and the validator returns no findings), and
-//! * every id in the recorded `check_ids` set is still produced.
+//! * `validator-fixture` / `both` — the recorded `primary_check_id` must
+//!   appear in the validator's findings (or, if it is `clean`, the validator
+//!   must produce zero findings). Every id in the recorded `check_ids` set
+//!   must also be present.
+//! * `decoder-fixture` — the validator must terminate without panicking. We
+//!   do not enforce a particular finding set (the contract is on
+//!   `[decoder.<impl>]` blocks, which `corpus-validator --strict` consumes).
 //!
 //! This catches accidental regressions in either the structural parser or
 //! any catalog check, and also catches drift between the persisted fixtures
@@ -21,52 +25,13 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use jbig2::validator::corpus::{Expected, Shape};
 use jbig2::validator::{validate, Lens};
 
 fn corpus_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
         .join("validator-corpus")
-}
-
-#[derive(Debug)]
-struct Expected {
-    primary: String,
-    check_ids: BTreeSet<String>,
-}
-
-fn parse_expected(path: &Path) -> Expected {
-    let text = fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-    let mut primary = String::new();
-    let mut check_ids: BTreeSet<String> = BTreeSet::new();
-    for line in text.lines() {
-        let line = line.trim();
-        if let Some(rest) = line.strip_prefix("primary_check_id") {
-            let value = rest
-                .trim_start_matches(|c: char| c.is_whitespace() || c == '=')
-                .trim();
-            primary = strip_quotes(value).to_string();
-        } else if let Some(rest) = line.strip_prefix("check_ids") {
-            let value = rest
-                .trim_start_matches(|c: char| c.is_whitespace() || c == '=')
-                .trim();
-            let inner = value.trim_start_matches('[').trim_end_matches(']').trim();
-            if !inner.is_empty() {
-                for item in inner.split(',') {
-                    let item = item.trim();
-                    if item.is_empty() {
-                        continue;
-                    }
-                    check_ids.insert(strip_quotes(item).to_string());
-                }
-            }
-        }
-    }
-    Expected { primary, check_ids }
-}
-
-fn strip_quotes(value: &str) -> &str {
-    value.trim_matches('"').trim_matches('\'')
 }
 
 fn collect_fixtures(root: &Path) -> Vec<PathBuf> {
@@ -119,7 +84,13 @@ fn validator_corpus_regression() {
                 continue;
             }
         };
-        let expected = parse_expected(expected_path);
+        let expected = match Expected::read(expected_path) {
+            Ok(e) => e,
+            Err(e) => {
+                failures.push(format!("{e}"));
+                continue;
+            }
+        };
         let report = validate(&bytes, Lens::StrictT88);
         let actual: BTreeSet<String> = report
             .findings
@@ -132,7 +103,23 @@ fn validator_corpus_regression() {
             .unwrap_or(expected_path)
             .display();
 
-        if expected.primary == "clean" {
+        match expected.shape {
+            // decoder-fixture: contract is on `[decoder.<impl>]` blocks,
+            // checked by `corpus-validator --strict`. The only requirement
+            // here is that the validator terminated.
+            Shape::DecoderFixture => continue,
+            Shape::ValidatorFixture | Shape::Both => {}
+        }
+
+        let Some(validator) = expected.validator.as_ref() else {
+            failures.push(format!(
+                "{}: shape = {:?} requires a [validator] block",
+                rel, expected.shape
+            ));
+            continue;
+        };
+
+        if validator.primary_check_id == "clean" {
             if !report.findings.is_empty() {
                 failures.push(format!(
                     "{}: expected clean stream but validator produced {}",
@@ -143,26 +130,25 @@ fn validator_corpus_regression() {
             continue;
         }
 
-        // `unknown` is a placeholder used for harvested third-party fixtures
-        // (e.g. Ghostscript Bugzilla) where the spec-violation has not been
-        // hand-classified yet. We still want to make sure the validator runs
-        // to completion without panicking, but we do not enforce a specific
-        // CheckId.
-        if expected.primary == "unknown" {
+        // `unknown` is a pre-baseline placeholder for fixtures whose
+        // primary id has not been classified yet. We still want to make sure
+        // the validator runs to completion without panicking, but we do not
+        // enforce a specific CheckId.
+        if validator.primary_check_id == "unknown" {
             continue;
         }
 
-        if !actual.contains(&expected.primary) {
+        if !actual.contains(&validator.primary_check_id) {
             failures.push(format!(
                 "{}: missing primary check id {}; got {{{}}}",
                 rel,
-                expected.primary,
+                validator.primary_check_id,
                 sorted_join(&actual)
             ));
             continue;
         }
 
-        let missing: Vec<&String> = expected
+        let missing: Vec<&String> = validator
             .check_ids
             .iter()
             .filter(|id| !actual.contains(*id))
@@ -214,14 +200,23 @@ fn synthetic_fixture_primary_check_ids_match_catalog() {
 
     let mut failures: Vec<String> = Vec::new();
     for path in &fixtures {
-        let expected = parse_expected(path);
-        if expected.primary.is_empty()
-            || expected.primary == "clean"
-            || expected.primary == "unknown"
+        let expected = match Expected::read(path) {
+            Ok(e) => e,
+            Err(e) => {
+                failures.push(format!("{e}"));
+                continue;
+            }
+        };
+        let Some(validator) = expected.validator.as_ref() else {
+            continue;
+        };
+        if validator.primary_check_id.is_empty()
+            || validator.primary_check_id == "clean"
+            || validator.primary_check_id == "unknown"
         {
             continue;
         }
-        if !known.contains(&expected.primary) {
+        if !known.contains(&validator.primary_check_id) {
             let rel = path
                 .strip_prefix(corpus_root())
                 .unwrap_or(path)
@@ -229,7 +224,7 @@ fn synthetic_fixture_primary_check_ids_match_catalog() {
                 .to_string();
             failures.push(format!(
                 "{rel}: primary_check_id {:?} is not in the validator catalog",
-                expected.primary,
+                validator.primary_check_id,
             ));
         }
     }
@@ -242,6 +237,49 @@ fn synthetic_fixture_primary_check_ids_match_catalog() {
              If you added a fixture, ensure tools/corpus-mint/main.rs uses an existing CheckId.",
             failures.len(),
             fixtures.len(),
+            failures.join("\n"),
+        );
+    }
+}
+
+/// Every directory under `tests/validator-corpus/bugzilla/harvested/` must
+/// contain a `stream.jb2`. This assertion catches the next "I added a
+/// `meta.toml` but forgot the stream" mistake at PR time rather than via
+/// silent zero-coverage drift in the regression set.
+///
+/// The companion `tracked/` directory is intentionally not asserted here:
+/// fixtures under `tracked/` document upstream bugs whose attachments are
+/// PDFs, zips, or other containers we deliberately do not extract — see
+/// `tests/validator-corpus/bugzilla/INDEX.md`.
+#[test]
+fn bugzilla_harvested_fixtures_have_streams() {
+    let harvested = corpus_root().join("bugzilla").join("harvested");
+    if !harvested.exists() {
+        return;
+    }
+    let mut failures: Vec<String> = Vec::new();
+    let mut checked = 0usize;
+    for entry in fs::read_dir(&harvested).expect("read harvested dir").flatten() {
+        let dir = entry.path();
+        if !dir.is_dir() {
+            continue;
+        }
+        checked += 1;
+        let stream = dir.join("stream.jb2");
+        let expected = dir.join("expected.toml");
+        if !stream.exists() {
+            failures.push(format!("{}: missing stream.jb2", dir.display()));
+        }
+        if !expected.exists() {
+            failures.push(format!("{}: missing expected.toml", dir.display()));
+        }
+    }
+    assert!(checked > 0, "no harvested bugzilla fixtures under {}", harvested.display());
+    if !failures.is_empty() {
+        panic!(
+            "bugzilla/harvested coverage gap ({} fixture(s)):\n{}\n\
+             Either move the directory to bugzilla/tracked/ or add the missing stream.jb2.",
+            failures.len(),
             failures.join("\n"),
         );
     }

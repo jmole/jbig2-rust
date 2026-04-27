@@ -1,0 +1,16 @@
+shape = "decoder-fixture"
+
+[decoder.rust]
+verdict = "RejectErr"
+not = ["panic", "oom"]
+note = "Baselined 2026-04: Jbig2Decoder::new rejects with `unknown segment type`."
+baseline_signature = "exit=1; jbig2-decode: Jbig2Decoder::new failed: invalid segment header: unknown segment type"
+
+[decoder.jbig2dec]
+verdict = "Unknown"
+upstream_status_at_baseline = "RESOLVED FIXED"
+note = "Pending baseline against vendor jbig2dec build."
+
+[decoder.itu_t88]
+verdict = "Unknown"
+note = "Pending baseline against ITU sample decoder."

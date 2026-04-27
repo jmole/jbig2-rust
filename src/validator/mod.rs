@@ -7,6 +7,8 @@
 pub mod catalog;
 mod check;
 mod citation;
+#[cfg(feature = "validator-corpus")]
+pub mod corpus;
 mod lens;
 mod parse;
 mod report;

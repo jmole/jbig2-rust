@@ -15,6 +15,7 @@ use std::fs;
 use std::path::Path;
 
 use anyhow::{anyhow, Context, Result};
+use jbig2::validator::corpus::Expected;
 use jbig2::validator::{validate, Lens, Report, Severity};
 use sha2::{Digest, Sha256};
 
@@ -126,19 +127,11 @@ pub fn run(root: &Path) -> Result<()> {
                 BUCKETING_RULE_VERSION,
             );
             fs::write(case_dir.join("meta.toml"), meta)?;
-            let findings = representative
-                .findings
-                .iter()
-                .map(|id| format!("{:?}", id))
-                .collect::<Vec<_>>()
-                .join(", ");
-            fs::write(
-                case_dir.join("expected.toml"),
-                format!(
-                    "primary_check_id = {:?}\ncheck_ids = [{}]\n",
-                    key.check_id, findings,
-                ),
-            )?;
+            Expected::validator(key.check_id.clone(), representative.findings.clone())
+                .write(&case_dir.join("expected.toml"))
+                .with_context(|| {
+                    format!("write expected metadata for {}", case_dir.display())
+                })?;
         }
         index.push_str(&format!(
             "| `{}` | {} | {} | {} | {} | {} |\n",
