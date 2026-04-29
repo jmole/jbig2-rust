@@ -36,10 +36,10 @@ jobs:
           make jbig2dec
 
       - name: Build rust decoder
-        run: cargo build --release --bin jbig2-decode --features cli
+        run: cargo build --release -p jbig2-workbench --bin jbig2-decode --features cli
 
       - name: Run full corpus tier-1
-        run: cargo run --release --features validator-corpus --bin corpus-validator -- --strict --with-c-decoders
+        run: cargo run --release -p jbig2-workbench --features validator-corpus --bin corpus-validator -- --strict --with-c-decoders
 
       - name: Upload corpus report
         if: always()
