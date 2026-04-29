@@ -1,0 +1,18 @@
+[package]
+name = "image-bilevel"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license = "MIT OR Apache-2.0"
+description = "Packed 1-bpp bilevel image type for the image-rs ecosystem."
+categories = ["multimedia::images"]
+keywords = ["image", "bilevel", "1bpp", "monochrome", "bitmap"]
+readme = "README.md"
+include = ["src/**/*.rs", "Cargo.toml", "README.md", "LICENSE-MIT", "LICENSE-APACHE"]
+
+[dependencies]
+image = { version = "0.25", default-features = false }
+
+[dev-dependencies]
+proptest = "1"
